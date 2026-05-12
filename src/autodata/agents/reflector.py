@@ -7,17 +7,19 @@ toward a different angle. This is the 'updated recipe' from the paper.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from loguru import logger
 
+from autodata.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness
 from autodata.models import LLMClient
 from autodata.schemas import Round
 
 
 class Reflector:
-    def __init__(self, client: LLMClient):
+    def __init__(self, client: LLMClient, harness: Optional[HarnessSpec] = None):
         self.client = client
+        self.harness = harness or DEFAULT_HARNESS
 
     def reflect(self, rounds: list[Round], domain_name: str, leakage_rules: list[str]) -> dict[str, Any]:
         too_easy = []
@@ -55,6 +57,7 @@ class Reflector:
                 f"FAILED_QUALITY: {json.dumps(failed_quality)}\n"
             )},
         ]
+        messages = apply_harness(messages, self.harness.rules_for("reflector"))
         try:
             data = self.client.complete_json(messages)
         except Exception as e:

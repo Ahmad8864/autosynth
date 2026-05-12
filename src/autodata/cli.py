@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from autodata.config import load_config
+from autodata.metaopt import MetaOptimizer
 from autodata.orchestrator import Orchestrator
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="autodata: agentic synthetic data generation")
@@ -50,6 +51,29 @@ def run_cmd(
         table.add_row(str(k), str(v))
     console.print(table)
     console.print(f"[green]output_dir:[/green] {orch.writer.root}")
+
+
+@app.command("metaopt")
+def metaopt_cmd(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, help="YAML config; metaopt.enabled must be true"),
+    rng_seed: int = typer.Option(0, "--rng-seed"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Run the paper's meta-optimization loop on the configured harness."""
+    _configure_logging(verbose)
+    cfg = load_config(config)
+    if not cfg.metaopt.enabled:
+        console.print("[red]metaopt.enabled is false in this config[/red]")
+        raise typer.Exit(2)
+    opt = MetaOptimizer(cfg, rng_seed=rng_seed)
+    summary = opt.run()
+
+    table = Table(title=f"metaopt {opt.run_id}")
+    table.add_column("metric")
+    table.add_column("value")
+    for k, v in summary.items():
+        table.add_row(str(k), str(v))
+    console.print(table)
 
 
 @app.command("init-domain")

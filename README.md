@@ -28,16 +28,20 @@ domain-specific component is a pluggable `DomainAdapter`.
 | Reflection / targeted feedback           | `agents.reflector.Reflector`                    |
 | Acceptance criteria (weak/strong/gap)    | `config.AcceptanceConfig` + `evaluator.evaluate`|
 | Per-source trajectories with all rounds  | `writer.RunWriter` + `schemas.Trajectory`       |
-| Positive-only rubric, weights ≤ 7        | enforced in `ChallengerAgent._parse`            |
+| Positive-only rubric, weights ≤ 7        | enforced in `ChallengerAgent._parse` / harness  |
 | "ALL rounds attempted" persisted         | trajectory rewritten after every round          |
+| Meta-opt population + Boltzmann (T=0.1)  | `metaopt.boltzmann_select`                      |
+| Failure trajectory analysis              | `metaopt.aggregate_failures`                    |
+| Code-editing agent ⇒ harness mutation    | `metaopt.Mutator` + `metaopt.apply_mutation`    |
+| Train+val gate, accept only if val ↑     | `metaopt.MetaOptimizer.run` decision block      |
 
 The defaults in `AcceptanceConfig` mirror the paper §3: weak avg ≤ 0.65,
 weak max ≤ 0.75, strong avg ∈ [0.60, 0.95), gap ≥ 0.20. All are
 overridable per run.
 
 The paper's meta-optimization loop (evolving the orchestrator's prompts
-themselves) is **not** implemented here — it is acknowledged as an
-extension point; see _Limitations_.
+themselves) is implemented in `autodata/metaopt.py` — see
+_Meta-optimization_ below.
 
 ---
 
@@ -211,11 +215,60 @@ interrupted run can be resumed (`resume: true`, default).
 
 ---
 
+## Meta-optimization
+
+`autodata metaopt --config CONFIG.yaml` runs the paper's secondary loop:
+evolve the orchestrator's instructions themselves. The unit of evolution
+is a `HarnessSpec` — a structured set of rule strings injected into each
+agent's system prompt (`challenger_rules`, `quality_rules`, …) plus a
+few numeric knobs (`rubric_max_weight`, `require_self_test`).
+
+The loop:
+
+1. Evaluate the seed harness on both training and validation source items.
+2. For each iteration:
+   - Pick a parent from the population via **Boltzmann sampling** at
+     `temperature = 0.1` over training scores.
+   - Aggregate the rejection-reason histogram from the parent's last
+     training run.
+   - Send the parent + failure summary to the **mutator** LLM, which
+     returns a structured `{rules_add, rules_remove_indices,
+     rubric_max_weight, require_self_test}` diff.
+   - Apply the mutation → child `HarnessSpec`. Duplicates (same
+     fingerprint) are detected and skipped.
+   - Evaluate child on training items. If it doesn't improve, reject.
+   - Otherwise evaluate on validation items. Accept the mutation only
+     if `child.val > parent.val` — same gate as the paper.
+
+Mutations operate on `HarnessSpec`, not on Python source. This preserves
+the expressive scope for prompt-text edits (the paper's main lever) while
+avoiding the safety / sandboxing surface of a real code-editing agent.
+This is called out explicitly so users can swap in their own mutator if
+they want richer edits.
+
+**Demo** (no API keys):
+
+```bash
+autodata metaopt --config configs/metaopt_mock.yaml
+```
+
+The mock-friendly scenario seeds at 0% accept rate; the mutator proposes
+a source-specificity rule on iteration 1; the rule lifts train and val
+to 100%; the mutation is accepted; subsequent iterations re-propose the
+same rule and are rejected (no-op detection). Population, lineage, and
+per-iteration decisions are written under
+`outputs/metaopt/<run_id>/iterations/iter_NNN/`.
+
+**Real run.** Add `metaopt: { enabled: true, max_iterations: 50, ... }`
+to your existing YAML config and point `metaopt.mutator` at a strong
+reasoning model. The loop reuses your `domain`, `acceptance`, `loop`,
+and agent model settings — meta-opt is layered on top of the normal
+run, not a separate codepath.
+
+---
+
 ## Limitations
 
-- The meta-optimization loop (evolving the orchestrator's instructions
-  themselves via a code-editing agent) is not implemented. It is the
-  paper's secondary loop and would significantly expand scope.
 - LLM-as-judge inherits the usual biases of LLM-as-judge. The rubric
   cap at weight ≤ 7 and the positive-only rule (paper §meta-opt) reduce
   but do not eliminate this.

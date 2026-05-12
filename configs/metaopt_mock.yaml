@@ -1,0 +1,44 @@
+# Meta-optimization demo using the in-process MockLLMProvider.
+# Drives the full population/Boltzmann/mutate/accept loop end-to-end with
+# zero API keys. Uses the `mock/metaopt` scenario, which scripts a mutator
+# that progressively adds rules and a judge that rewards more rules in the
+# challenger system prompt — so accepted mutations actually happen.
+
+run_id: metaopt-mock-demo
+output_dir: outputs
+max_examples: 8
+
+domain:
+  name: qa_from_documents
+  params:
+    source_dir: examples/sample_docs
+    glob: "**/*.md"
+
+loop:
+  max_rounds: 2
+  weak_samples: 2
+  strong_samples: 2
+
+acceptance:
+  weak_avg_max: 0.65
+  weak_max_max: 0.75
+  forbid_weak_zero: false
+  strong_avg_min: 0.60
+  strong_avg_max: 0.95
+  min_gap: 0.20
+  require_quality_passed: true
+
+orchestrator:  { provider_model: mock/metaopt }
+challenger:    { provider_model: mock/metaopt }
+weak_solver:   { provider_model: mock/metaopt }
+strong_solver: { provider_model: mock/metaopt }
+judge:         { provider_model: mock/metaopt }
+
+metaopt:
+  enabled: true
+  max_iterations: 4
+  boltzmann_temp: 0.1
+  train_size: 1
+  val_size: 1
+  inner_max_rounds: 2
+  mutator: { provider_model: mock/metaopt }

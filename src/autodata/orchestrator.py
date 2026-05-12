@@ -20,6 +20,7 @@ from rich.progress import (
 from autodata.agents import ChallengerAgent, Reflector, SolverAgent, VerifierJudge
 from autodata.config import RunConfig
 from autodata.domain import DomainAdapter, GroundingItem, build_domain
+from autodata.harness import DEFAULT_HARNESS, HarnessSpec
 from autodata.models import LLMClient
 from autodata.safety import SafetyFilter, load_filter
 from autodata.schemas import EvalReport, Round, Trajectory
@@ -29,32 +30,46 @@ from autodata.writer import RunWriter, build_accepted_record
 
 
 class Orchestrator:
-    def __init__(self, cfg: RunConfig, *, run_id: Optional[str] = None):
+    def __init__(
+        self,
+        cfg: RunConfig,
+        *,
+        run_id: Optional[str] = None,
+        harness: Optional[HarnessSpec] = None,
+        grounding_filter: Optional[set[str]] = None,
+    ):
         self.cfg = cfg
         self.run_id = run_id or cfg.run_id or _make_run_id(cfg)
+        self.harness = harness or DEFAULT_HARNESS
+        self.grounding_filter = grounding_filter  # restrict to these source_ids if set
         self.domain: DomainAdapter = build_domain(cfg.domain.name, cfg.domain.path, cfg.domain.params)
 
         self.challenger = ChallengerAgent(
             LLMClient(cfg.challenger, role="challenger", timeout_s=cfg.request_timeout_s, max_retries=cfg.max_retries),
             self.domain,
             rubric_max_weight=cfg.acceptance.rubric_max_weight,
+            harness=self.harness,
         )
         self.verifier = VerifierJudge(
             LLMClient(cfg.judge, role="judge", timeout_s=cfg.request_timeout_s, max_retries=cfg.max_retries),
             self.domain,
+            harness=self.harness,
         )
         self.weak = SolverAgent(
             LLMClient(cfg.weak_solver, role="weak", timeout_s=cfg.request_timeout_s, max_retries=cfg.max_retries),
             self.domain,
             "weak",
+            harness=self.harness,
         )
         self.strong = SolverAgent(
             LLMClient(cfg.strong_solver, role="strong", timeout_s=cfg.request_timeout_s, max_retries=cfg.max_retries),
             self.domain,
             "strong",
+            harness=self.harness,
         )
         self.reflector = Reflector(
-            LLMClient(cfg.orchestrator, role="reflector", timeout_s=cfg.request_timeout_s, max_retries=cfg.max_retries)
+            LLMClient(cfg.orchestrator, role="reflector", timeout_s=cfg.request_timeout_s, max_retries=cfg.max_retries),
+            harness=self.harness,
         )
 
         self.safety: Optional[SafetyFilter] = load_filter(cfg.safety.filter) if cfg.safety.enabled else None
@@ -67,6 +82,8 @@ class Orchestrator:
     def run(self) -> dict[str, int]:
         items: Iterable[GroundingItem] = self.domain.load_grounding()
         item_list = list(items)
+        if self.grounding_filter is not None:
+            item_list = [i for i in item_list if i.source_id in self.grounding_filter]
         if not item_list:
             logger.warning("domain {} produced no grounding items", self.domain.name)
             return self.writer._summary

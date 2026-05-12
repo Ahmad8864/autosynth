@@ -1,21 +1,31 @@
 """Challenger: turns grounding + feedback into a structured Candidate."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from loguru import logger
 
 from autodata.domain import DomainAdapter, GroundingItem
+from autodata.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness
 from autodata.models import LLMClient
 from autodata.schemas import Candidate, RubricCriterion
 from autodata.utils import stable_id
 
 
 class ChallengerAgent:
-    def __init__(self, client: LLMClient, domain: DomainAdapter, rubric_max_weight: int = 7):
+    def __init__(
+        self,
+        client: LLMClient,
+        domain: DomainAdapter,
+        rubric_max_weight: int = 7,
+        harness: Optional[HarnessSpec] = None,
+    ):
         self.client = client
         self.domain = domain
-        self.rubric_max_weight = rubric_max_weight
+        self.harness = harness or DEFAULT_HARNESS
+        # Harness's rubric_max_weight overrides constructor default when set,
+        # so meta-optimization mutations are honored.
+        self.rubric_max_weight = self.harness.rubric_max_weight or rubric_max_weight
 
     def generate(
         self,
@@ -25,6 +35,7 @@ class ChallengerAgent:
         prior_payloads: list[dict[str, Any]],
     ) -> Candidate:
         messages = self.domain.generation_prompt(item, feedback, round_n, prior_payloads)
+        messages = apply_harness(messages, self.harness.rules_for("challenger"))
         data = self.client.complete_json(messages)
         return self._parse(data, item, round_n)
 

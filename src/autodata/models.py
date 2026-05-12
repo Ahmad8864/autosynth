@@ -213,3 +213,71 @@ def _peek_round(text: str) -> int:
 # Register the default scripted scenario.
 register_mock("scripted", _default_handler)
 register_mock("default", _default_handler)
+
+
+# ---------------------------------------------------------------------------
+# Meta-optimization demo scenario.
+#
+# Behavior:
+#   - mutator deterministically proposes the marker rule on the FIRST iteration
+#     and a different rule on later iterations (no-op refinements).
+#   - judge gives the strong solver +0.20 if the marker rule appears in the
+#     challenger system prompt. So once meta-opt accepts the marker, accept
+#     rates improve and the loop progresses.
+# ---------------------------------------------------------------------------
+
+_MARKER_RULE = "Target a quantitative or design-specific claim unique to the source."
+
+
+def _metaopt_handler(role: str, messages: list[Message]) -> str:
+    import json as _json
+
+    all_text = " ".join(m.get("content", "") for m in messages)
+
+    if role == "meta_mutator" or "ROLE:META_MUTATOR" in all_text:
+        # On every call propose the marker rule; the metaopt loop will detect a
+        # repeat fingerprint and skip subsequent duplicates.
+        return _json.dumps({
+            "rationale": "Add source-specificity rule to widen weak/strong gap.",
+            "challenger_rules_add": [_MARKER_RULE],
+        })
+
+    if role == "challenger" or "ROLE:CHALLENGER" in all_text:
+        # When the marker rule is in OUR system prompt, emit a rubric tagged
+        # [SPECIFIC] — that tag flows downstream into the judge's prompt and
+        # changes its scoring. This simulates "better instructions → better
+        # candidate → judge can tell".
+        marker = _MARKER_RULE in all_text
+        c1 = "[SPECIFIC] Names a source-specific contribution" if marker else "Names contribution"
+        return _json.dumps({
+            "payload": {"question": "What specific contribution does this source make?",
+                        "context": "Synthetic context.", "reasoning_skills": ["synthesis"]},
+            "reference_output": "The contribution as named in the source.",
+            "rubric": [
+                {"id": "c1", "description": c1, "weight": 5},
+                {"id": "c2", "description": "Cites a detail from the source", "weight": 3},
+            ],
+        })
+    if role == "reflector" or "ROLE:REFLECTION" in all_text:
+        return _json.dumps({"feedback": ["push for source-specificity"], "new_angle": "quantitative claim"})
+    if "ROLE:QUALITY" in all_text:
+        return _json.dumps({"passed": True, "failures": [], "notes": "ok"})
+    if "ROLE:JUDGE" in all_text or role == "judge":
+        # Detect [SPECIFIC] in the rubric (the judge prompt embeds the rubric).
+        specific = "[SPECIFIC]" in all_text
+        if "[solver=weak]" in all_text:
+            return _json.dumps({"per_criterion": {"c1": 0.25, "c2": 0.10}, "total": 0.20, "failure_modes": []})
+        return _json.dumps({
+            "per_criterion": {"c1": 0.95 if specific else 0.55,
+                              "c2": 0.7 if specific else 0.55},
+            "total": 0.85 if specific else 0.55,
+            "failure_modes": [] if specific else ["generic_response"],
+        })
+    if role == "weak" or "ROLE:WEAK" in all_text:
+        return "generic weak attempt"
+    if role == "strong" or "ROLE:STRONG" in all_text:
+        return "specific strong attempt"
+    return "{}"
+
+
+register_mock("metaopt", _metaopt_handler)

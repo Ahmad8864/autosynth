@@ -85,6 +85,31 @@ class SafetyConfig(BaseModel):
     filter: Optional[str] = None  # "module:attr"
 
 
+class MetaOptConfig(BaseModel):
+    """Settings for the meta-optimization loop (paper §meta-opt).
+
+    The loop selects parents by Boltzmann sampling on training score, asks
+    the mutator LLM to propose an edit, evaluates the child on train items,
+    and accepts only if validation also improves on the parent.
+    """
+
+    enabled: bool = False
+    max_iterations: int = 20
+    boltzmann_temp: float = 0.1
+    train_size: int = 6
+    val_size: int = 4
+    val_seed: int = 1  # for deterministic train/val split
+    # Mutator model — usually a strong reasoning model. Falls back to orchestrator.
+    mutator: Optional[ModelConfig] = None
+    # If set, seed the population with the harness JSON at this path; otherwise DEFAULT_HARNESS.
+    seed_harness_path: Optional[str] = None
+    # Cap inner runs so meta-opt doesn't sprawl.
+    inner_max_examples_per_run: int = 8
+    inner_max_rounds: int = 3
+    # Output sub-directory under the parent run's output_dir.
+    output_subdir: str = "metaopt"
+
+
 class RunConfig(BaseModel):
     run_id: Optional[str] = None  # auto-generated if unset
     output_dir: str = "outputs"
@@ -110,6 +135,8 @@ class RunConfig(BaseModel):
 
     resume: bool = True
     hf_export: bool = False
+
+    metaopt: MetaOptConfig = Field(default_factory=MetaOptConfig)
 
 
 def load_config(path: str | Path) -> RunConfig:
