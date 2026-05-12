@@ -13,10 +13,11 @@ from autodata.config import (
     DispatcherConfig,
     DomainConfig,
     LoopConfig,
+    MetaOptConfig,
     ModelConfig,
     RunConfig,
 )
-from autodata.runner import Runner
+from autodata.runner import Runner, _build_llm_config
 from autodata.store import Store
 
 
@@ -90,6 +91,46 @@ def test_resume_skips_completed(sample_docs: Path, output_dir: Path):
     cfg.resume = True
     summary2 = Runner(cfg, run_id="test-run").run()
     assert summary2.accepted == 2
+
+
+def test_build_llm_config_collects_model_extras(sample_docs: Path, output_dir: Path):
+    cfg = _cfg(sample_docs, output_dir, "happy")
+    cfg.weak_solver = ModelConfig(
+        provider_model="azure/weak-dep",
+        extra={"api_base": "https://weak.example", "api_version": "2024-02-01"},
+    )
+    cfg.strong_solver = ModelConfig(
+        provider_model="azure/strong-dep",
+        extra={"api_base": "https://strong.example"},
+    )
+    # Two roles sharing the same provider_model — extras should merge.
+    cfg.judge = ModelConfig(
+        provider_model="azure/shared", extra={"api_base": "https://shared.example"},
+    )
+    cfg.challenger = ModelConfig(
+        provider_model="azure/shared", extra={"api_version": "2024-02-01"},
+    )
+    cfg.metaopt = MetaOptConfig(
+        mutator=ModelConfig(provider_model="azure/mutator",
+                            extra={"api_base": "https://mutator.example"}),
+    )
+
+    llm_cfg = _build_llm_config(cfg)
+    assert llm_cfg.model_extras["azure/weak-dep"] == {
+        "api_base": "https://weak.example", "api_version": "2024-02-01",
+    }
+    assert llm_cfg.model_extras["azure/strong-dep"] == {"api_base": "https://strong.example"}
+    assert llm_cfg.model_extras["azure/shared"] == {
+        "api_base": "https://shared.example", "api_version": "2024-02-01",
+    }
+    assert llm_cfg.model_extras["azure/mutator"] == {"api_base": "https://mutator.example"}
+
+
+def test_build_llm_config_omits_models_with_no_extras(sample_docs: Path, output_dir: Path):
+    cfg = _cfg(sample_docs, output_dir, "happy")
+    # Default ModelConfig has extra={}; nothing should land in model_extras.
+    llm_cfg = _build_llm_config(cfg)
+    assert llm_cfg.model_extras == {}
 
 
 def test_export_jsonl_via_store(sample_docs: Path, output_dir: Path, tmp_path: Path):

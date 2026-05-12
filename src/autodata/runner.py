@@ -11,7 +11,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from autodata.config import RunConfig
+from autodata.config import ModelConfig, RunConfig
 from autodata.dispatcher import Dispatcher, RunSummary
 from autodata.domain import DomainAdapter, GroundingItem, build_domain
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec
@@ -102,4 +102,29 @@ def _build_llm_config(cfg: RunConfig) -> LLMConfig:
         rate_limits={"mock/*": RateLimitSpec(rpm=None)},
         default_temperature=cfg.challenger.temperature,
         default_max_tokens=cfg.challenger.max_tokens,
+        model_extras=_collect_model_extras(cfg),
     )
+
+
+def _collect_model_extras(cfg: RunConfig) -> dict[str, dict]:
+    """Group ``ModelConfig.extra`` from every role by ``provider_model``.
+
+    If two roles target the same provider_model with overlapping keys, later
+    roles in the iteration order win — same-key conflicts are a config bug
+    that's usually clearer when they appear in YAML side-by-side.
+    """
+    roles: list[ModelConfig | None] = [
+        cfg.orchestrator,
+        cfg.challenger,
+        cfg.weak_solver,
+        cfg.strong_solver,
+        cfg.judge,
+        cfg.metaopt.mutator,
+    ]
+    out: dict[str, dict] = {}
+    for role_cfg in roles:
+        if role_cfg is None or not role_cfg.extra:
+            continue
+        bucket = out.setdefault(role_cfg.provider_model, {})
+        bucket.update(role_cfg.extra)
+    return out

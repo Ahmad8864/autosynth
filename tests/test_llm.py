@@ -283,6 +283,63 @@ def test_real_dispatch_passes_json_mode_and_overrides(monkeypatch):
     assert kwargs["response_format"] == {"type": "json_object"}
 
 
+def test_real_dispatch_spreads_model_extras(monkeypatch):
+    fake = _FakeResp("hi")
+    captured: list[dict[str, Any]] = []
+
+    def fake_completion(**kwargs):
+        captured.append(kwargs)
+        return fake
+
+    import litellm
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm, "completion_cost", lambda *, completion_response: 0.0)
+
+    client = LLMClient(LLMConfig(model_extras={
+        "azure/my-deployment": {
+            "api_base": "https://example.openai.azure.com",
+            "api_version": "2024-02-01",
+            # Should NOT override the explicit per-call value:
+            "temperature": 0.99,
+        },
+        "openai/gpt-4o": {"api_base": "should-not-leak"},
+    }))
+    req = LLMRequest(request_id="r-extras", item_id="i", round_n=1, role="weak",
+                     model_key="azure/my-deployment",
+                     messages=[{"role": "user", "content": "x"}],
+                     temperature=0.0)
+    client.complete(req)
+
+    kwargs = captured[0]
+    assert kwargs["api_base"] == "https://example.openai.azure.com"
+    assert kwargs["api_version"] == "2024-02-01"
+    assert kwargs["temperature"] == 0.0          # explicit kwarg wins over extras
+    assert kwargs["model"] == "azure/my-deployment"
+    # Unrelated model's extras must not bleed in.
+    assert "should-not-leak" not in kwargs.values()
+
+
+def test_real_dispatch_unset_model_extras_is_noop(monkeypatch):
+    fake = _FakeResp("hi")
+    captured: list[dict[str, Any]] = []
+
+    def fake_completion(**kwargs):
+        captured.append(kwargs)
+        return fake
+
+    import litellm
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm, "completion_cost", lambda *, completion_response: 0.0)
+
+    client = LLMClient()  # no model_extras configured
+    req = LLMRequest(request_id="r-noextras", item_id="i", round_n=1, role="weak",
+                     model_key="openai/gpt-4o-mini",
+                     messages=[{"role": "user", "content": "x"}])
+    client.complete(req)
+    # Only the canonical keys — no surprise extras keys were added.
+    assert set(captured[0].keys()) == {"model", "messages", "temperature", "max_tokens", "timeout"}
+
+
 def test_real_dispatch_retries_on_transient_failure(monkeypatch):
     attempts = {"n": 0}
 

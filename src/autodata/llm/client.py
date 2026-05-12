@@ -33,6 +33,9 @@ class LLMConfig(BaseModel):
     request_timeout_s: int = 60
     # Per-model price overrides: { "openai/gpt-4o-mini": [input_per_million, output_per_million] }
     prices: dict[str, list[float]] = Field(default_factory=dict)
+    # Per-model LiteLLM kwargs (api_base, api_version, api_key, etc.), keyed by
+    # model string. Applied as defaults under the explicit per-call kwargs.
+    model_extras: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Default sampling params applied when LLMRequest leaves them None.
     default_temperature: float = 0.7
     default_max_tokens: int = 2048
@@ -138,6 +141,9 @@ class LLMClient:
             )
             if req.json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
+            extras = self.cfg.model_extras.get(req.model_key)
+            if extras:
+                kwargs = {**extras, **kwargs}
             return litellm.completion(**kwargs)
 
         t0 = time.monotonic()
