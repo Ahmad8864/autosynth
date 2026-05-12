@@ -88,6 +88,16 @@ class SafetyConfig(BaseModel):
     filter: str | None = None  # "module:attr"
 
 
+class DispatcherConfig(BaseModel):
+    """Settings for the request-fulfillment dispatcher."""
+
+    concurrency: int = 4              # outbound LLM calls in flight per loop tick
+    poll_interval_s: float = 5.0      # batch dispatcher polling cadence
+    shutdown_grace_s: float = 5.0     # SIGINT/SIGTERM grace before hard exit
+    max_request_failures: int = 3     # request retries before terminal REJECTED
+    items_per_advance: int = 50       # max items to advance per loop iteration
+
+
 class MetaOptConfig(BaseModel):
     """Settings for the meta-optimization loop (paper §meta-opt).
 
@@ -138,6 +148,9 @@ class RunConfig(BaseModel):
 
     resume: bool = True
     hf_export: bool = False
+
+    dispatcher: DispatcherConfig = Field(default_factory=DispatcherConfig)
+    budget_usd: float | None = None  # null = unlimited
 
     metaopt: MetaOptConfig = Field(default_factory=MetaOptConfig)
 
