@@ -17,11 +17,9 @@ from autodata.llm import (
     LLMRequest,
     Message,
     RateLimitSpec,
-    Response,
     TokenBucket,
     register_mock,
 )
-
 
 # ---------------------------------------------------------------------------
 # helpers

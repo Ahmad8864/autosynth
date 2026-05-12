@@ -21,17 +21,15 @@ from autodata.config import (
 )
 from autodata.domain import GroundingItem
 from autodata.domains.qa_from_documents import QAFromDocuments
-from autodata.harness import DEFAULT_HARNESS, make_harness
+from autodata.harness import DEFAULT_HARNESS
 from autodata.pipeline import (
     ItemState,
     State,
     StepResponse,
-    StepResult,
     step,
 )
 from autodata.safety import SafetyVerdict
 from autodata.utils import stable_id
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -183,7 +181,9 @@ def test_need_candidate_safety_block_goes_to_reflection(domain, grounding):
         request_id=stable_id("i1", 1, "challenger", 0),
         role="challenger", round_n=1, attempt=0, text=_challenger_text(),
     )
-    blocking_filter = lambda txt: SafetyVerdict(allowed=False, reasons=["pii:email"])
+    def blocking_filter(txt):
+        return SafetyVerdict(allowed=False, reasons=["pii:email"])
+
     res = step(item, [resp], cfg=cfg, harness=DEFAULT_HARNESS,
                domain=domain, grounding=grounding, safety_filter=blocking_filter)
     assert res.state.state == State.NEED_REFLECTION

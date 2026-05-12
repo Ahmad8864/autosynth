@@ -7,7 +7,6 @@ from MIGRATION_PLAN.md §4.2, and JSONL export.
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 from pathlib import Path
 
@@ -24,7 +23,6 @@ from autodata.store import (
     SCHEMA_VERSION,
     Store,
 )
-
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -133,7 +131,7 @@ def test_update_item_rejection_reasons(store: Store):
 def test_round_materialization_lifecycle(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_CANDIDATE")
     # 1. insert with candidate only
-    rid = store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
+    store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
     row = store.get_round(iid, 1)
     assert row["candidate_blob"] is not None
     assert row["quality_blob"] is None
@@ -202,8 +200,10 @@ def test_claim_pending_atomic_under_threads(store: Store):
             claimed_ids.extend(r.request_id for r in rows)
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
-    for t in threads: t.start()
-    for t in threads: t.join()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
     assert len(claimed_ids) == 50              # exactly the 50 we inserted
     assert len(set(claimed_ids)) == 50         # no duplicates
@@ -321,7 +321,7 @@ def test_accepted_and_export_jsonl(store: Store, tmp_path: Path):
     n = store.export_jsonl("r1", out)
     assert n == 2
     lines = out.read_text().splitlines()
-    parsed = [json.loads(l) for l in lines]
+    parsed = [json.loads(line) for line in lines]
     assert {r["input"] for r in parsed} == {"a", "b"}
 
 

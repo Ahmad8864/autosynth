@@ -132,8 +132,8 @@ class Dispatcher:
                     # Items are non-terminal but nothing is queued or in flight —
                     # break out instead of spinning on a stuck state.
                     logger.warning(
-                        "dispatcher idle but {} items non-terminal; exiting",
-                        len(self.store.items_terminal_counts(self.run_id)),
+                        "dispatcher idle but non-terminal items remain; states={}",
+                        self.store.items_terminal_counts(self.run_id),
                     )
                     break
                 time.sleep(self.cfg.dispatcher.poll_interval_s)

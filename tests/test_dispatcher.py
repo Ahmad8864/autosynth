@@ -7,7 +7,6 @@ and the unrecoverable-failure path.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
@@ -20,14 +19,13 @@ from autodata.config import (
     ModelConfig,
     RunConfig,
 )
-from autodata.dispatcher import Dispatcher, fulfill_local
+from autodata.dispatcher import Dispatcher
 from autodata.domain import GroundingItem
 from autodata.domains.qa_from_documents import QAFromDocuments
 from autodata.harness import DEFAULT_HARNESS
 from autodata.llm import LLMClient, register_mock
 from autodata.pipeline import State
-from autodata.store import REQ_DONE, REQ_FAILED, REQ_PENDING, Store
-
+from autodata.store import Store
 
 # ---------------------------------------------------------------------------
 # fixtures + mock scenarios
@@ -249,7 +247,7 @@ def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
     one = store.claim_pending(limit=1)
     if one:
         # Mark it done with a fake response so we have at least partial state.
-        from autodata.llm import LLMRequest, Response
+        from autodata.llm import LLMRequest
         req = one[0]
         request = LLMRequest(
             request_id=req.request_id, item_id=req.item_id, round_n=req.round_n,

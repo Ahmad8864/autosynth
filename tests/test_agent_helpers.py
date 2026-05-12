@@ -7,10 +7,8 @@ import pytest
 
 from autodata.agents import challenger, reflector, solver, verifier
 from autodata.config import AcceptanceConfig
-from autodata.domain import GroundingItem
 from autodata.domains.qa_from_documents import QAFromDocuments
-from autodata.harness import DEFAULT_HARNESS, make_harness
-from autodata.llm import LLMRequest
+from autodata.harness import make_harness
 from autodata.schemas import (
     Candidate,
     EvalReport,

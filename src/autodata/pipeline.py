@@ -102,6 +102,14 @@ class StepResult:
     scores_to_persist: tuple[ScoreRecord, ...] = ()
 
 
+@dataclass(frozen=True)
+class ScoreIngestion:
+    weak_scores: tuple[SolverScore, ...]
+    strong_scores: tuple[SolverScore, ...]
+    records: tuple[ScoreRecord, ...]
+    judge_response_for_solver: dict[str, str]
+
+
 _ROLE_TO_CFG_ATTR: dict[str, str] = {
     "challenger": "challenger",
     "quality": "judge",
@@ -252,29 +260,28 @@ def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
                           all 2N scores are in, in which case we evaluate)
     """
     judge_requests = _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain)
-    new_weak, new_strong, new_scores, judge_for_solver = _ingest_judge_responses(item, relevant)
+    scores = _ingest_judge_responses(item, relevant)
 
     have_all_scores = (
-        len(new_weak) >= cfg.loop.weak_samples
-        and len(new_strong) >= cfg.loop.strong_samples
+        len(scores.weak_scores) >= cfg.loop.weak_samples
+        and len(scores.strong_scores) >= cfg.loop.strong_samples
     )
     if not have_all_scores:
         new_state = replace(
             item,
-            weak_scores=tuple(new_weak),
-            strong_scores=tuple(new_strong),
-            judge_response_for_solver=judge_for_solver,
+            weak_scores=scores.weak_scores,
+            strong_scores=scores.strong_scores,
+            judge_response_for_solver=scores.judge_response_for_solver,
         )
         return StepResult(
             state=new_state,
             new_requests=tuple(judge_requests),
-            scores_to_persist=tuple(new_scores),
+            scores_to_persist=scores.records,
         )
 
     return _finalize_scored_round(
         item, cfg, harness, domain,
-        new_weak=new_weak, new_strong=new_strong,
-        new_scores=new_scores, judge_requests=judge_requests,
+        scores=scores, judge_requests=judge_requests,
     )
 
 
@@ -314,14 +321,19 @@ def _ingest_judge_responses(item, relevant):
                 solver_response_id=r.parent_response_id,
                 judge_response_id=r.request_id,
             ))
-    return new_weak, new_strong, new_scores, judge_for_solver
+    return ScoreIngestion(
+        weak_scores=tuple(new_weak),
+        strong_scores=tuple(new_strong),
+        records=tuple(new_scores),
+        judge_response_for_solver=judge_for_solver,
+    )
 
 
 def _finalize_scored_round(
     item, cfg, harness, domain,
-    *, new_weak, new_strong, new_scores, judge_requests,
+    *, scores: ScoreIngestion, judge_requests,
 ) -> StepResult:
-    evaluation = evaluate(new_weak, new_strong, item.quality, cfg.acceptance)
+    evaluation = evaluate(scores.weak_scores, scores.strong_scores, item.quality, cfg.acceptance)
     round_obj = Round(
         refinement_round=item.current_round,
         candidate=item.candidate,
@@ -332,8 +344,8 @@ def _finalize_scored_round(
     )
     rounds_history = item.rounds_history + (round_obj,)
     common = dict(
-        weak_scores=tuple(new_weak),
-        strong_scores=tuple(new_strong),
+        weak_scores=scores.weak_scores,
+        strong_scores=scores.strong_scores,
         rounds_history=rounds_history,
     )
 
@@ -341,7 +353,7 @@ def _finalize_scored_round(
         new_state = replace(item, state=State.ACCEPTED, **common)
         return StepResult(
             state=new_state, new_requests=tuple(judge_requests),
-            completed_round=round_obj, scores_to_persist=tuple(new_scores),
+            completed_round=round_obj, scores_to_persist=scores.records,
         )
 
     if item.current_round < cfg.loop.max_rounds:
@@ -355,7 +367,7 @@ def _finalize_scored_round(
         new_state = replace(item, state=State.NEED_REFLECTION, **common)
         return StepResult(
             state=new_state, new_requests=tuple(judge_requests) + (rreq,),
-            completed_round=round_obj, scores_to_persist=tuple(new_scores),
+            completed_round=round_obj, scores_to_persist=scores.records,
         )
 
     new_state = replace(
@@ -365,7 +377,7 @@ def _finalize_scored_round(
     )
     return StepResult(
         state=new_state, new_requests=tuple(judge_requests),
-        completed_round=round_obj, scores_to_persist=tuple(new_scores),
+        completed_round=round_obj, scores_to_persist=scores.records,
     )
 
 

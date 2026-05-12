@@ -9,7 +9,8 @@ Reference in your YAML config as:
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from autodata.domain import DomainAdapter, GroundingItem, register_domain
 from autodata.schemas import Candidate
