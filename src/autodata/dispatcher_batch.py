@@ -1,36 +1,27 @@
 """Batch dispatcher: submit pending requests in chunks to provider batch APIs.
 
 Implements the ``fulfill`` strategy for ``Dispatcher`` that uses provider
-batch endpoints (OpenAI, Anthropic) instead of streaming HTTP. Per the
-migration plan §4.1–§4.2, the pipeline state machine is unchanged across
-the batch SLA; resume works because every request carries a deterministic
-``request_id`` and the ``batch_id`` column tags in-flight batch submissions.
+batch endpoints (OpenAI, Anthropic) instead of streaming HTTP. The pipeline
+state machine is unchanged across the batch SLA; resume works because every
+request carries a deterministic ``request_id`` and the ``batch_id`` column
+tags in-flight batch submissions.
 
-This module ships an abstract ``BatchProvider`` protocol plus two
-provider implementations:
-
-  - ``OpenAIBatchProvider`` — uses the LiteLLM batch wrapper, which proxies
-    OpenAI's `/v1/batches` endpoint.
-  - ``AnthropicBatchProvider`` — uses Anthropic's message batches endpoint.
-
-For tests + the default path, an in-process ``MockBatchProvider`` mirrors
-the API exactly — submit a batch, poll, fetch results — so the dispatcher
-loop's resume/poll/recover logic can be exercised without real providers.
+The module defines a small :class:`BatchProvider` protocol and an in-process
+:class:`MockBatchProvider` used by tests and demos. Real provider
+implementations (OpenAI / Anthropic) live alongside their SDK adapters.
 """
 from __future__ import annotations
 
-import json
-import time
 from abc import abstractmethod
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Optional, Protocol
+from typing import Protocol
 
 from loguru import logger
 
 from autodata.llm import LLMClient, LLMRequest, Response
-from autodata.store import REQ_IN_FLIGHT, RequestRow, Store
-
+from autodata.store import RequestRow, Store
 
 __all__ = [
     "BatchProvider",
@@ -56,12 +47,12 @@ class BatchResult:
     """One completed (request_id, Response) pair from a batch."""
 
     request_id: str
-    response: Optional[Response]
-    error: Optional[str] = None
+    response: Response | None
+    error: str | None = None
 
 
 class BatchProvider(Protocol):
-    """Provider-specific batch submission + polling. ~30 LOC per provider."""
+    """Provider-specific batch submission + polling."""
 
     provider_name: str
 
@@ -75,19 +66,17 @@ class BatchProvider(Protocol):
     def fetch(self, batch_id: str) -> Iterable[BatchResult]: ...
 
 
-# ---------------------------------------------------------------------------
-# Mock provider — used for tests and for runs that need a batch-like execution
-# pattern without a real provider account.
-# ---------------------------------------------------------------------------
-
 class MockBatchProvider:
-    """In-process batch provider. Submission is just an LLMClient.complete()
-    call per request, results held in memory until the next ``poll`` cycle.
+    """In-process batch provider used by tests and demos.
+
+    ``submit`` synchronously calls ``LLMClient.complete`` per request and
+    stashes the results. They become visible to ``fetch`` only after the
+    caller has polled ``is_complete`` ``ready_after_polls`` times.
     """
 
     provider_name = "mock"
 
-    def __init__(self, llm: Optional[LLMClient] = None, ready_after_polls: int = 1):
+    def __init__(self, llm: LLMClient | None = None, ready_after_polls: int = 1):
         self.llm = llm or LLMClient()
         self.ready_after_polls = ready_after_polls
         self._batches: dict[str, dict] = {}
@@ -101,13 +90,10 @@ class MockBatchProvider:
                 results.append(BatchResult(request_id=req.request_id, response=resp))
             except Exception as e:
                 results.append(BatchResult(request_id=req.request_id, response=None, error=str(e)))
-        self._batches[batch_id] = {
-            "results": results,
-            "polls": 0,
-            "request_ids": [r.request_id for r in requests],
-        }
+        self._batches[batch_id] = {"results": results, "polls": 0}
         return BatchHandle(
-            batch_id=batch_id, provider=self.provider_name,
+            batch_id=batch_id,
+            provider=self.provider_name,
             request_ids=tuple(r.request_id for r in requests),
         )
 
@@ -119,26 +105,23 @@ class MockBatchProvider:
         return b["polls"] >= self.ready_after_polls
 
     def fetch(self, batch_id: str) -> Iterable[BatchResult]:
-        b = self._batches.get(batch_id)
+        # Pop on fetch so long-running runs don't accumulate batch state forever.
+        b = self._batches.pop(batch_id, None)
         return b["results"] if b else []
 
 
-# ---------------------------------------------------------------------------
-# fulfill strategy + poll loop
-# ---------------------------------------------------------------------------
-
 def make_fulfill_batch(provider: BatchProvider):
-    """Build a ``fulfill`` callable bound to a specific BatchProvider.
+    """Build a ``fulfill`` callable bound to a specific :class:`BatchProvider`.
 
     Plug into ``Dispatcher(..., fulfill=make_fulfill_batch(provider))``.
     """
     def _fulfill(requests: list[RequestRow], dispatcher) -> None:
         if not requests:
             return
-        # Group by (provider, model) — different providers can't share a batch.
+        # Different providers can't share a batch; group by provider prefix.
         groups: dict[str, list[RequestRow]] = defaultdict(list)
         for r in requests:
-            groups[r.model_key.split("/", 1)[0]].append(r)
+            groups[_provider_of(r.model_key)].append(r)
 
         for provider_prefix, group in groups.items():
             llm_requests = [_row_to_request(r) for r in group]
@@ -147,14 +130,11 @@ def make_fulfill_batch(provider: BatchProvider):
             except Exception as e:
                 logger.error("batch submit failed for {}: {}", provider_prefix, e)
                 for r in group:
-                    dispatcher.store.mark_request_failed(r.request_id, f"batch_submit_error: {e}")
+                    dispatcher.store.mark_request_failed(
+                        r.request_id, f"batch_submit_error: {e}",
+                    )
                 continue
-            # Tag the in-flight rows with the batch_id so the poll loop can find them.
-            with dispatcher.store.tx() as cur:
-                cur.execute(
-                    f"UPDATE requests SET batch_id=? WHERE request_id IN ({','.join('?' * len(group))})",
-                    (handle.batch_id, *(r.request_id for r in group)),
-                )
+            dispatcher.store.tag_batch(handle.batch_id, [r.request_id for r in group])
             logger.info("submitted batch {} ({} requests)", handle.batch_id, len(group))
     return _fulfill
 
@@ -165,9 +145,8 @@ def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
     Returns the number of newly-completed requests.
     """
     store: Store = dispatcher.store
-    batch_ids = store.outstanding_batch_ids(dispatcher.run_id)
     completed = 0
-    for batch_id in batch_ids:
+    for batch_id in store.outstanding_batch_ids(dispatcher.run_id):
         try:
             if not provider.is_complete(batch_id):
                 continue
@@ -181,19 +160,27 @@ def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
             continue
         for br in results:
             if br.error is not None or br.response is None:
-                store.mark_request_failed(br.request_id, br.error or "batch fetch missing response")
+                store.mark_request_failed(
+                    br.request_id, br.error or "batch fetch missing response",
+                )
                 continue
             store.insert_response(
-                request_id=br.request_id, model=br.response.model, text=br.response.text,
+                request_id=br.request_id,
+                model=br.response.model,
+                text=br.response.text,
                 prompt_tokens=br.response.prompt_tokens,
                 completion_tokens=br.response.completion_tokens,
-                cost_usd=br.response.cost_usd, duration_ms=br.response.duration_ms,
+                cost_usd=br.response.cost_usd,
+                duration_ms=br.response.duration_ms,
             )
             completed += 1
-        # Clear the batch_id tag on rows we just processed.
-        with store.tx() as cur:
-            cur.execute("UPDATE requests SET batch_id=NULL WHERE batch_id=?", (batch_id,))
+        store.clear_batch(batch_id)
     return completed
+
+
+def _provider_of(model_key: str) -> str:
+    """Return the provider prefix of a LiteLLM model string (``openai/x`` → ``openai``)."""
+    return model_key.split("/", 1)[0]
 
 
 def _row_to_request(r: RequestRow) -> LLMRequest:

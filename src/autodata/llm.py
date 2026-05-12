@@ -1,19 +1,16 @@
 """LLM client for the event-sourced pipeline.
 
-One class, ~250 LOC. Handles:
-  - provider routing (LiteLLM for real models, in-process mock for `mock/*`)
-  - per-(provider, model) RPM rate limiting via a simple token bucket
-  - retries via tenacity (exponential backoff)
-  - cost accounting from LiteLLM `usage` and a default price table
+One class. Handles:
 
-The pipeline emits :py:class:`LLMRequest` objects; the dispatcher passes them
-to :py:meth:`LLMClient.complete`, which returns :py:class:`Response`. Mock
-scenarios are registered via :py:func:`register_mock` and share the same
-registry as the legacy ``models.LLMClient`` so existing test scenarios
-(``mock/happy``, ``mock/reject``, ``mock/metaopt``) keep working during the
-migration.
+  - provider routing (LiteLLM for real models, in-process mock for ``mock/*``)
+  - per-(provider, model) RPM rate limiting via a token bucket
+  - retries via tenacity (exponential backoff with jitter)
+  - cost accounting from LiteLLM ``usage`` and a default price table
 
-See MIGRATION_PLAN.md §5.
+The pipeline emits :class:`LLMRequest` objects; the dispatcher passes them
+to :meth:`LLMClient.complete`, which returns a :class:`Response`. Mock
+scenarios are registered via :func:`register_mock` and addressable as the
+``mock/<scenario>`` model string.
 """
 from __future__ import annotations
 
@@ -24,7 +21,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -52,7 +49,9 @@ __all__ = [
 
 Message = dict[str, str]  # {"role": "system|user|assistant", "content": "..."}
 
-Role = Literal["challenger", "quality", "weak", "strong", "judge", "reflector", "meta_mutator"]
+# Agent roles understood by the pipeline; the field is typed `str` for forward
+# compatibility (e.g. user-defined roles in custom domains).
+ROLES = ("challenger", "quality", "weak", "strong", "judge", "reflector", "meta_mutator")
 
 
 @dataclass(frozen=True)
@@ -62,15 +61,14 @@ class LLMRequest:
     request_id: str
     item_id: str
     round_n: int
-    role: str  # one of `Role`; typed loosely to avoid runtime Literal validation
-    model_key: str  # provider model string, e.g. "openai/gpt-4o-mini" or "mock/happy"
+    role: str
+    model_key: str  # LiteLLM model string, e.g. "openai/gpt-4o-mini", "mock/happy"
     messages: list[Message]
     json_mode: bool = False
     attempt: int = 0
-    parent_response_id: Optional[str] = None
-    # Per-call overrides (rarely needed; usually use LLMConfig defaults).
-    temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
+    parent_response_id: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,9 +78,9 @@ class Response:
     request_id: str
     model: str
     text: str
-    prompt_tokens: Optional[int] = None
-    completion_tokens: Optional[int] = None
-    cost_usd: Optional[float] = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cost_usd: float | None = None
     duration_ms: int = 0
 
     def parse_json(self) -> dict[str, Any]:
@@ -96,8 +94,8 @@ class Response:
 class RateLimitSpec(BaseModel):
     """RPM only; TPM is logged but not enforced (no pre-call token counting)."""
 
-    rpm: Optional[int] = None  # None = no limit
-    burst: Optional[int] = None  # default = rpm / 4, min 1
+    rpm: int | None = None  # None = no limit
+    burst: int | None = None  # default = rpm / 4, min 1
 
 
 class LLMConfig(BaseModel):
@@ -130,7 +128,7 @@ _DEFAULT_PRICES: dict[str, tuple[float, float]] = {
 }
 
 
-def price_for(model_key: str, *, overrides: Optional[dict[str, list[float]]] = None) -> Optional[tuple[float, float]]:
+def price_for(model_key: str, *, overrides: dict[str, list[float]] | None = None) -> tuple[float, float] | None:
     if overrides and model_key in overrides:
         p = overrides[model_key]
         if len(p) >= 2:
@@ -139,7 +137,7 @@ def price_for(model_key: str, *, overrides: Optional[dict[str, list[float]]] = N
 
 
 def _compute_cost(model_key: str, usage: dict[str, int],
-                  overrides: Optional[dict[str, list[float]]] = None) -> Optional[float]:
+                  overrides: dict[str, list[float]] | None = None) -> float | None:
     p = price_for(model_key, overrides=overrides)
     if not p:
         return None
@@ -174,7 +172,7 @@ class TokenBucket:
         self._clock = clock
         self._sleep = sleep
 
-    def acquire(self, tokens: int = 1, timeout: Optional[float] = None) -> None:
+    def acquire(self, tokens: int = 1, timeout: float | None = None) -> None:
         deadline = (self._clock() + timeout) if timeout is not None else None
         while True:
             with self._lock:
@@ -383,7 +381,7 @@ register_mock("metaopt", _metaopt_handler)
 class LLMClient:
     """Single entry point for completions across the run."""
 
-    def __init__(self, cfg: Optional[LLMConfig] = None):
+    def __init__(self, cfg: LLMConfig | None = None):
         self.cfg = cfg or LLMConfig()
         self._buckets: dict[str, TokenBucket] = {}
         self._buckets_lock = threading.Lock()
@@ -400,7 +398,7 @@ class LLMClient:
 
     # ---- rate limiting --------------------------------------------------
 
-    def _limiter_for(self, model_key: str) -> Optional[TokenBucket]:
+    def _limiter_for(self, model_key: str) -> TokenBucket | None:
         with self._buckets_lock:
             if model_key in self._buckets:
                 return self._buckets[model_key]
@@ -413,7 +411,7 @@ class LLMClient:
             self._buckets[model_key] = bucket
             return bucket
 
-    def _match_rate_limit(self, model_key: str) -> Optional[RateLimitSpec]:
+    def _match_rate_limit(self, model_key: str) -> RateLimitSpec | None:
         # Exact match wins; otherwise first matching glob in insertion order.
         if model_key in self.cfg.rate_limits:
             return self.cfg.rate_limits[model_key]

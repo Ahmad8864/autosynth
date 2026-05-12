@@ -1,6 +1,4 @@
-"""Verifier/Judge — module-level ``build_*_request`` / ``parse_*`` helpers
-for the event-sourced pipeline.
-"""
+"""Verifier / Judge: quality-check and per-solver rubric scoring."""
 
 from __future__ import annotations
 

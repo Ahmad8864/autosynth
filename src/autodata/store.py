@@ -7,23 +7,21 @@ lock and a BEGIN IMMEDIATE transaction.
 The schema is the canonical record of a run — the database *is* the run.
 JSONL and HF exports are produced lazily from ``accepted`` rows via
 :py:meth:`Store.export_jsonl` / :py:meth:`Store.export_hf`.
-
-See MIGRATION_PLAN.md §3 for the spec.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
 import threading
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any
 
 from autodata.schemas import Candidate, EvalReport, QualityCheck, SolverScore
 from autodata.utils import stable_id
-
 
 SCHEMA_VERSION = 1
 
@@ -104,6 +102,7 @@ CREATE TABLE responses (
     received_at        TEXT NOT NULL
 );
 CREATE INDEX responses_received ON responses(received_at);
+CREATE INDEX responses_request ON responses(request_id);
 
 CREATE TABLE solver_scores (
     score_id           TEXT PRIMARY KEY,
@@ -130,8 +129,6 @@ CREATE TABLE accepted (
 """
 
 
-# Item / Run states are strings; we don't import the enum here to keep store
-# free of pipeline dependencies. The pipeline module is the source of truth.
 RUN_STATUS_RUNNING = "running"
 RUN_STATUS_COMPLETED = "completed"
 RUN_STATUS_ABORTED = "aborted"
@@ -141,12 +138,24 @@ REQ_IN_FLIGHT = "in_flight"
 REQ_DONE = "done"
 REQ_FAILED = "failed"
 
+# Item states. Defined here (not imported from pipeline.State) so the store
+# can stay free of pipeline dependencies and so raw SQL strings reference a
+# single source of truth. pipeline.State mirrors these values.
+ITEM_PENDING = "PENDING"
+ITEM_NEED_CANDIDATE = "NEED_CANDIDATE"
+ITEM_NEED_QUALITY = "NEED_QUALITY"
+ITEM_NEED_SCORES = "NEED_SCORES"
+ITEM_NEED_REFLECTION = "NEED_REFLECTION"
+ITEM_ACCEPTED = "ACCEPTED"
+ITEM_REJECTED = "REJECTED"
+TERMINAL_ITEM_STATES = (ITEM_ACCEPTED, ITEM_REJECTED)
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _dumps(obj: Any) -> Optional[str]:
+def _dumps(obj: Any) -> str | None:
     if obj is None:
         return None
     if hasattr(obj, "model_dump_json"):
@@ -154,7 +163,7 @@ def _dumps(obj: Any) -> Optional[str]:
     return json.dumps(obj, default=str)
 
 
-def _loads(text: Optional[str]) -> Any:
+def _loads(text: str | None) -> Any:
     if text is None:
         return None
     return json.loads(text)
@@ -170,16 +179,16 @@ class RequestRow:
     attempt: int
     messages: list[dict[str, str]]
     json_mode: bool
-    parent_response_id: Optional[str]
+    parent_response_id: str | None
     status: str
-    submitted_at: Optional[str]
-    completed_at: Optional[str]
-    batch_id: Optional[str]
+    submitted_at: str | None
+    completed_at: str | None
+    batch_id: str | None
     failure_count: int
-    last_error: Optional[str]
+    last_error: str | None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "RequestRow":
+    def from_row(cls, row: sqlite3.Row) -> RequestRow:
         return cls(
             request_id=row["request_id"],
             item_id=row["item_id"],
@@ -205,10 +214,10 @@ class ResponseRow:
     request_id: str
     model: str
     text: str
-    prompt_tokens: Optional[int]
-    completion_tokens: Optional[int]
-    cost_usd: Optional[float]
-    duration_ms: Optional[int]
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    cost_usd: float | None
+    duration_ms: int | None
     received_at: str
 
 
@@ -269,7 +278,7 @@ class Store:
     # ------------------------------------------------------------------
 
     def create_run(self, run_id: str, *, config: Any, harness: Any = None,
-                   cost_usd_cap: Optional[float] = None) -> None:
+                   cost_usd_cap: float | None = None) -> None:
         now = _utcnow()
         with self.tx() as cur:
             cur.execute(
@@ -289,8 +298,12 @@ class Store:
                 (status, now, finished, run_id),
             )
 
-    def get_run(self, run_id: str) -> Optional[sqlite3.Row]:
+    def get_run(self, run_id: str) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
+
+    def first_run(self) -> sqlite3.Row | None:
+        """Return any one run row, or None. Convenient for single-run db files."""
+        return self.conn.execute("SELECT * FROM runs LIMIT 1").fetchone()
 
     def touch_run(self, run_id: str) -> None:
         with self.tx() as cur:
@@ -301,7 +314,7 @@ class Store:
     # ------------------------------------------------------------------
 
     def insert_item(self, *, run_id: str, source_id: str, domain: str,
-                    state: str, source_metadata: Optional[dict] = None) -> str:
+                    state: str, source_metadata: dict | None = None) -> str:
         item_id = stable_id(run_id, source_id)
         now = _utcnow()
         with self.tx() as cur:
@@ -316,10 +329,10 @@ class Store:
         return item_id
 
     def update_item(self, item_id: str, *,
-                    state: Optional[str] = None,
-                    current_round: Optional[int] = None,
-                    final_round: Optional[int] = None,
-                    rejection_reasons: Optional[list[str]] = None) -> None:
+                    state: str | None = None,
+                    current_round: int | None = None,
+                    final_round: int | None = None,
+                    rejection_reasons: list[str] | None = None) -> None:
         sets: list[str] = ["updated_at = ?"]
         vals: list[Any] = [_utcnow()]
         if state is not None:
@@ -338,15 +351,15 @@ class Store:
         with self.tx() as cur:
             cur.execute(f"UPDATE items SET {', '.join(sets)} WHERE item_id = ?", vals)
 
-    def get_item(self, item_id: str) -> Optional[sqlite3.Row]:
+    def get_item(self, item_id: str) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
 
     def items_ready_to_advance(self, run_id: str, limit: int = 100) -> list[sqlite3.Row]:
         """Items with unconsumed responses, ready for a step()."""
         return self.conn.execute(
-            """SELECT i.* FROM items i
+            f"""SELECT i.* FROM items i
                WHERE i.run_id = ?
-                 AND i.state NOT IN ('ACCEPTED','REJECTED')
+                 AND i.state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})
                  AND EXISTS (
                     SELECT 1 FROM responses r
                     JOIN requests q ON q.request_id = r.request_id
@@ -354,14 +367,14 @@ class Store:
                  )
                ORDER BY i.updated_at
                LIMIT ?""",
-            (run_id, limit),
+            (run_id, *TERMINAL_ITEM_STATES, limit),
         ).fetchall()
 
     def items_pending_first_step(self, run_id: str, limit: int = 100) -> list[sqlite3.Row]:
         """Items in PENDING state that need their first step."""
         return self.conn.execute(
-            "SELECT * FROM items WHERE run_id=? AND state='PENDING' ORDER BY created_at LIMIT ?",
-            (run_id, limit),
+            "SELECT * FROM items WHERE run_id=? AND state=? ORDER BY created_at LIMIT ?",
+            (run_id, ITEM_PENDING, limit),
         ).fetchall()
 
     def items_terminal_counts(self, run_id: str) -> dict[str, int]:
@@ -370,10 +383,27 @@ class Store:
         )
         return {row["state"]: row["n"] for row in cur.fetchall()}
 
+    def items_for_run(self, run_id: str, *, stuck_only: bool = False) -> list[sqlite3.Row]:
+        """List items for a run; with `stuck_only`, exclude terminal states."""
+        if stuck_only:
+            return self.conn.execute(
+                f"""SELECT item_id, source_id, state, current_round, final_round, rejection_reasons
+                    FROM items WHERE run_id=?
+                    AND state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})
+                    ORDER BY updated_at""",
+                (run_id, *TERMINAL_ITEM_STATES),
+            ).fetchall()
+        return self.conn.execute(
+            """SELECT item_id, source_id, state, current_round, final_round, rejection_reasons
+               FROM items WHERE run_id=? ORDER BY updated_at""",
+            (run_id,),
+        ).fetchall()
+
     def has_non_terminal_items(self, run_id: str) -> bool:
         row = self.conn.execute(
-            """SELECT 1 FROM items WHERE run_id=? AND state NOT IN ('ACCEPTED','REJECTED') LIMIT 1""",
-            (run_id,),
+            f"""SELECT 1 FROM items WHERE run_id=?
+                AND state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))}) LIMIT 1""",
+            (run_id, *TERMINAL_ITEM_STATES),
         ).fetchone()
         return row is not None
 
@@ -386,10 +416,10 @@ class Store:
         return stable_id("round", item_id, round_n)
 
     def upsert_round(self, *, item_id: str, round_n: int,
-                     candidate: Optional[Candidate] = None,
-                     quality: Optional[QualityCheck] = None,
-                     evaluation: Optional[EvalReport] = None,
-                     reflection: Optional[str] = None) -> str:
+                     candidate: Candidate | None = None,
+                     quality: QualityCheck | None = None,
+                     evaluation: EvalReport | None = None,
+                     reflection: str | None = None) -> str:
         rid = self.round_id(item_id, round_n)
         now = _utcnow()
         with self.tx() as cur:
@@ -436,7 +466,7 @@ class Store:
             "SELECT * FROM rounds WHERE item_id=? ORDER BY round_n", (item_id,)
         ).fetchall()
 
-    def get_round(self, item_id: str, round_n: int) -> Optional[sqlite3.Row]:
+    def get_round(self, item_id: str, round_n: int) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT * FROM rounds WHERE item_id=? AND round_n=?", (item_id, round_n)
         ).fetchone()
@@ -470,7 +500,7 @@ class Store:
             )
         return len(rows)
 
-    def claim_pending(self, limit: int, *, batch_id: Optional[str] = None) -> list[RequestRow]:
+    def claim_pending(self, limit: int, *, batch_id: str | None = None) -> list[RequestRow]:
         """Atomically transition up to `limit` pending requests to in_flight.
 
         Returns the claimed rows. With `batch_id`, also tags them for batch dispatch.
@@ -490,7 +520,7 @@ class Store:
             )
             return [RequestRow.from_row(row) for row in cur.fetchall()]
 
-    def pending_count(self, run_id: Optional[str] = None) -> int:
+    def pending_count(self, run_id: str | None = None) -> int:
         if run_id:
             row = self.conn.execute(
                 """SELECT COUNT(*) FROM requests q JOIN items i ON i.item_id = q.item_id
@@ -503,7 +533,7 @@ class Store:
             ).fetchone()
         return int(row[0])
 
-    def in_flight_count(self, run_id: Optional[str] = None) -> int:
+    def in_flight_count(self, run_id: str | None = None) -> int:
         if run_id:
             row = self.conn.execute(
                 """SELECT COUNT(*) FROM requests q JOIN items i ON i.item_id = q.item_id
@@ -525,11 +555,26 @@ class Store:
         )
         return [row["batch_id"] for row in cur.fetchall()]
 
-    def get_request(self, request_id: str) -> Optional[RequestRow]:
+    def tag_batch(self, batch_id: str, request_ids: list[str]) -> None:
+        """Stamp a batch_id on the given requests so the poll loop can find them."""
+        if not request_ids:
+            return
+        with self.tx() as cur:
+            cur.execute(
+                f"UPDATE requests SET batch_id=? WHERE request_id IN ({','.join('?' * len(request_ids))})",
+                (batch_id, *request_ids),
+            )
+
+    def clear_batch(self, batch_id: str) -> None:
+        """Remove the batch_id tag from all requests once results are processed."""
+        with self.tx() as cur:
+            cur.execute("UPDATE requests SET batch_id=NULL WHERE batch_id=?", (batch_id,))
+
+    def get_request(self, request_id: str) -> RequestRow | None:
         row = self.conn.execute("SELECT * FROM requests WHERE request_id=?", (request_id,)).fetchone()
         return RequestRow.from_row(row) if row else None
 
-    def requests_for_item(self, item_id: str, *, round_n: Optional[int] = None) -> list[RequestRow]:
+    def requests_for_item(self, item_id: str, *, round_n: int | None = None) -> list[RequestRow]:
         if round_n is None:
             cur = self.conn.execute("SELECT * FROM requests WHERE item_id=? ORDER BY rowid", (item_id,))
         else:
@@ -564,10 +609,10 @@ class Store:
     # ------------------------------------------------------------------
 
     def insert_response(self, *, request_id: str, model: str, text: str,
-                        prompt_tokens: Optional[int] = None,
-                        completion_tokens: Optional[int] = None,
-                        cost_usd: Optional[float] = None,
-                        duration_ms: Optional[int] = None) -> None:
+                        prompt_tokens: int | None = None,
+                        completion_tokens: int | None = None,
+                        cost_usd: float | None = None,
+                        duration_ms: int | None = None) -> None:
         """Insert a response and atomically mark the request done.
 
         Idempotent on request_id (skipped if a response row already exists).
@@ -600,7 +645,7 @@ class Store:
                     (cost_usd, request_id),
                 )
 
-    def get_response(self, response_id: str) -> Optional[ResponseRow]:
+    def get_response(self, response_id: str) -> ResponseRow | None:
         row = self.conn.execute("SELECT * FROM responses WHERE response_id=?", (response_id,)).fetchone()
         if row is None:
             return None
@@ -615,6 +660,32 @@ class Store:
             (item_id, since_ts),
         )
         return [ResponseRow(**dict(row)) for row in cur.fetchall()]
+
+    def hydrate_responses(self, item_id: str, since_ts: str) -> list[sqlite3.Row]:
+        """Pull responses + the request fields + parent request/response in one query.
+
+        Returns rows with columns: request_id, role, round_n, attempt, text,
+        parent_response_id, parent_role, parent_text. Replaces the N+1 pattern
+        of fetching each request and its parent separately.
+        """
+        cur = self.conn.execute(
+            """SELECT r.request_id            AS request_id,
+                      q.role                   AS role,
+                      q.round_n                AS round_n,
+                      q.attempt                AS attempt,
+                      r.text                   AS text,
+                      q.parent_response_id     AS parent_response_id,
+                      pq.role                  AS parent_role,
+                      pr.text                  AS parent_text
+               FROM responses r
+               JOIN requests q  ON q.request_id  = r.request_id
+               LEFT JOIN requests  pq ON pq.request_id  = q.parent_response_id
+               LEFT JOIN responses pr ON pr.response_id = q.parent_response_id
+               WHERE q.item_id = ? AND r.received_at > ?
+               ORDER BY r.request_id""",
+            (item_id, since_ts),
+        )
+        return cur.fetchall()
 
     def cost_so_far(self, run_id: str) -> float:
         row = self.conn.execute(
@@ -696,11 +767,11 @@ class Store:
             yield _loads(row["payload_blob"])
 
     # ------------------------------------------------------------------
-    # Resume normalization (§4.2)
+    # Resume normalization
     # ------------------------------------------------------------------
 
     def normalize_for_resume(self, *, run_id: str, max_request_failures: int) -> dict[str, int]:
-        """Reconcile request states after a restart. See §4.2 table.
+        """Reconcile request states after a restart.
 
         - in_flight w/o batch_id  → pending (local fulfill lost its work)
         - in_flight w/ batch_id   → leave (batch poll will fetch)
@@ -742,13 +813,23 @@ class Store:
     def unrecoverable_items(self, run_id: str, max_request_failures: int) -> list[str]:
         """Items owning a request that has hit the failure cap."""
         cur = self.conn.execute(
-            """SELECT DISTINCT i.item_id FROM items i
+            f"""SELECT DISTINCT i.item_id FROM items i
                JOIN requests q ON q.item_id = i.item_id
                WHERE i.run_id = ? AND q.status = ? AND q.failure_count >= ?
-                 AND i.state NOT IN ('ACCEPTED','REJECTED')""",
-            (run_id, REQ_FAILED, max_request_failures),
+                 AND i.state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})""",
+            (run_id, REQ_FAILED, max_request_failures, *TERMINAL_ITEM_STATES),
         )
         return [row["item_id"] for row in cur.fetchall()]
+
+    def failure_rounds(self, run_id: str) -> list[sqlite3.Row]:
+        """Rows for failure aggregation: candidate, quality, evaluation, accepted."""
+        cur = self.conn.execute(
+            """SELECT r.candidate_blob, r.quality_blob, r.eval_blob, r.accepted
+               FROM rounds r JOIN items i ON i.item_id = r.item_id
+               WHERE i.run_id = ?""",
+            (run_id,),
+        )
+        return cur.fetchall()
 
     # ------------------------------------------------------------------
     # Export
@@ -764,7 +845,7 @@ class Store:
                 n += 1
         return n
 
-    def export_hf(self, run_id: str, out_dir: Path) -> Optional[Path]:
+    def export_hf(self, run_id: str, out_dir: Path) -> Path | None:
         try:
             from datasets import Dataset  # type: ignore
         except ImportError:

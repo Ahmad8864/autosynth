@@ -1,33 +1,29 @@
 """Dispatcher: the only thing that touches the network.
 
-One ``Dispatcher`` class drives the run loop:
+The run loop, in pseudocode::
 
-  while not stop:
-      advance any items with unconsumed responses (calls pure step())
-      claim and fulfill pending requests
-      poll outstanding batches (no-op for local)
-      check budget; honor signals
+    while not stop:
+        advance items with unconsumed responses (calls pure step())
+        claim and fulfill pending requests
+        poll outstanding batches (no-op for local)
+        check budget; honor signals
 
-``fulfill`` is a strategy callable — `fulfill_local` for thread-pool
-execution, `fulfill_batch` for provider batch APIs. The local strategy is
-shipped here; batch lives in ``dispatcher_batch`` (commit 9).
-
-State reconstruction from the store happens in :py:meth:`Dispatcher._load_item_state`.
-Persistence of a ``StepResult`` happens in :py:meth:`Dispatcher._persist_step_result`.
-Both are this module's responsibility — they bridge the pure pipeline with
-the durable store.
-
-See MIGRATION_PLAN.md §4.
+``fulfill`` is a strategy callable — :func:`fulfill_local` (thread-pool) is
+shipped here; the batch-API variant lives in :mod:`autodata.dispatcher_batch`.
+:meth:`Dispatcher._load_item_state` reconstructs in-flight state from the
+store before each call to :func:`pipeline.step`;
+:meth:`Dispatcher._persist_step_result` writes the result back.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import signal
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 from loguru import logger
 
@@ -36,25 +32,25 @@ from autodata.domain import DomainAdapter, GroundingItem
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec
 from autodata.llm import LLMClient, LLMRequest, Response
 from autodata.pipeline import (
+    TERMINAL_STATES,
     ItemState,
-    ScoreRecord,
     State,
     StepResponse,
     StepResult,
-    TERMINAL_STATES,
     step,
 )
 from autodata.safety import SafetyFilter, load_filter
-from autodata.schemas import Candidate, EvalReport, QualityCheck, Round, SolverScore
+from autodata.schemas import Candidate, EvalReport, QualityCheck, Round
 from autodata.store import (
-    REQ_DONE,
-    REQ_FAILED,
-    REQ_PENDING,
+    ITEM_ACCEPTED,
+    ITEM_REJECTED,
     RUN_STATUS_ABORTED,
     RUN_STATUS_COMPLETED,
     RequestRow,
     Store,
 )
+
+_BUDGET_WARN_FRACTION = 0.8
 
 
 @dataclass
@@ -69,37 +65,22 @@ class RunSummary:
 Fulfill = Callable[[list[RequestRow], "Dispatcher"], None]
 
 
-# ---------------------------------------------------------------------------
-# fulfill strategies
-# ---------------------------------------------------------------------------
-
-def fulfill_local(requests: list[RequestRow], dispatcher: "Dispatcher") -> None:
+def fulfill_local(requests: list[RequestRow], dispatcher: Dispatcher) -> None:
     """Thread-pool concurrent HTTP. Each request becomes a future; responses
-    are inserted as they complete."""
+    are inserted as they complete. Uses the dispatcher's persistent pool."""
     if not requests:
         return
-    concurrency = max(1, dispatcher.cfg.dispatcher.concurrency)
-    with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = {pool.submit(_one_request, r, dispatcher): r for r in requests}
-        for fut in as_completed(futures):
-            try:
-                fut.result()
-            except Exception:
-                logger.exception("dispatcher fulfill worker error")
+    pool = dispatcher._executor()
+    futures = [pool.submit(_one_request, r, dispatcher) for r in requests]
+    for fut in as_completed(futures):
+        try:
+            fut.result()
+        except Exception:
+            logger.exception("dispatcher fulfill worker error")
 
 
-def _one_request(req_row: RequestRow, dispatcher: "Dispatcher") -> None:
-    request = LLMRequest(
-        request_id=req_row.request_id,
-        item_id=req_row.item_id,
-        round_n=req_row.round_n,
-        role=req_row.role,
-        model_key=req_row.model_key,
-        messages=req_row.messages,
-        json_mode=req_row.json_mode,
-        attempt=req_row.attempt,
-        parent_response_id=req_row.parent_response_id,
-    )
+def _one_request(req_row: RequestRow, dispatcher: Dispatcher) -> None:
+    request = _row_to_llm_request(req_row)
     try:
         resp: Response = dispatcher.llm.complete(request)
     except Exception as e:
@@ -117,9 +98,20 @@ def _one_request(req_row: RequestRow, dispatcher: "Dispatcher") -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Dispatcher
-# ---------------------------------------------------------------------------
+def _row_to_llm_request(r: RequestRow) -> LLMRequest:
+    """Hydrate a stored RequestRow back into an LLMRequest for fulfillment."""
+    return LLMRequest(
+        request_id=r.request_id,
+        item_id=r.item_id,
+        round_n=r.round_n,
+        role=r.role,
+        model_key=r.model_key,
+        messages=r.messages,
+        json_mode=r.json_mode,
+        attempt=r.attempt,
+        parent_response_id=r.parent_response_id,
+    )
+
 
 class Dispatcher:
     def __init__(
@@ -133,7 +125,7 @@ class Dispatcher:
         harness: HarnessSpec | None = None,
         grounding: dict[str, GroundingItem] | None = None,
         fulfill: Fulfill = fulfill_local,
-        poll_in_flight: Optional[Callable[["Dispatcher"], int]] = None,
+        poll_in_flight: Callable[[Dispatcher], int] | None = None,
     ):
         self.store = store
         self.llm = llm
@@ -144,13 +136,22 @@ class Dispatcher:
         self.grounding = grounding or {}
         self.fulfill = fulfill
         self.poll_in_flight = poll_in_flight
-        self.safety_filter: Optional[SafetyFilter] = (
+        self.safety_filter: SafetyFilter | None = (
             load_filter(cfg.safety.filter) if cfg.safety.enabled else None
         )
         self._stop = threading.Event()
         self._installed_handlers: list = []
+        self._pool: ThreadPoolExecutor | None = None
+        self._budget_warned = False
 
-    # ---- public entry --------------------------------------------------
+    def _executor(self) -> ThreadPoolExecutor:
+        """Lazy persistent thread pool for fulfill_local — created once per run."""
+        if self._pool is None:
+            workers = max(1, self.cfg.dispatcher.concurrency)
+            self._pool = ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="autodata-dispatcher",
+            )
+        return self._pool
 
     def run(self) -> RunSummary:
         self._install_signal_handlers()
@@ -162,23 +163,24 @@ class Dispatcher:
                 self.store.update_run_status(self.run_id, RUN_STATUS_COMPLETED)
         finally:
             self._uninstall_signal_handlers()
+            if self._pool is not None:
+                self._pool.shutdown(wait=True)
+                self._pool = None
         return self._summarize()
-
-    # ---- main loop -----------------------------------------------------
 
     def _main_loop(self) -> None:
         while not self._stop.is_set():
             advanced = self._advance_ready_items()
             dispatched = self._dispatch_pending()
             polled = self.poll_in_flight(self) if self.poll_in_flight else 0
-            self._mark_unrecoverable_items()    # any newly-capped items → REJECTED
+            self._mark_unrecoverable_items()
             in_flight = self.store.in_flight_count(self.run_id)
             if not advanced and not dispatched and not polled and in_flight == 0:
                 if not self.store.has_non_terminal_items(self.run_id):
                     break
                 if self.store.pending_count(self.run_id) == 0:
-                    # Nothing left to do but the items aren't terminal either.
-                    # This indicates stuck state — exit to avoid spinning.
+                    # Items are non-terminal but nothing is queued or in flight —
+                    # break out instead of spinning on a stuck state.
                     logger.warning(
                         "dispatcher idle but {} items non-terminal; exiting",
                         len(self.store.items_terminal_counts(self.run_id)),
@@ -190,35 +192,28 @@ class Dispatcher:
                 self.store.update_run_status(self.run_id, RUN_STATUS_ABORTED)
                 break
 
-    # ---- advancement (pipeline → store) --------------------------------
-
     def _advance_ready_items(self) -> int:
-        count = 0
-        # First-step items (PENDING) advance with empty responses.
-        pending_first = self.store.items_pending_first_step(
-            self.run_id, limit=self.cfg.dispatcher.items_per_advance
+        per_advance = self.cfg.dispatcher.items_per_advance
+        rows = (
+            self.store.items_pending_first_step(self.run_id, limit=per_advance)
+            + self.store.items_ready_to_advance(self.run_id, limit=per_advance)
         )
-        for row in pending_first:
+        for row in rows:
             self._advance_one(row)
-            count += 1
-        # Items with new responses since their last update.
-        ready = self.store.items_ready_to_advance(
-            self.run_id, limit=self.cfg.dispatcher.items_per_advance
-        )
-        for row in ready:
-            self._advance_one(row)
-            count += 1
-        return count
+        return len(rows)
 
     def _advance_one(self, item_row) -> None:
         item_state = self._load_item_state(item_row)
         responses = self._hydrate_responses(item_row["item_id"], item_row["updated_at"])
         grounding = self.grounding.get(item_state.source_id)
         if grounding is None:
-            logger.error("no grounding item for source_id={}; marking REJECTED",
-                         item_state.source_id)
+            logger.error(
+                "no grounding item for source_id={}; marking REJECTED",
+                item_state.source_id,
+            )
             self.store.update_item(
-                item_state.item_id, state=State.REJECTED.value,
+                item_state.item_id,
+                state=ITEM_REJECTED,
                 rejection_reasons=["unrecoverable: missing grounding"],
             )
             return
@@ -231,70 +226,84 @@ class Dispatcher:
         except Exception:
             logger.exception("pipeline step crashed for item {}", item_state.item_id)
             return
-        self._persist_step_result(item_state, result)
+        self._persist_step_result(result)
 
-    def _persist_step_result(self, before: ItemState, result: StepResult) -> None:
+    def _persist_step_result(self, result: StepResult) -> None:
         new_state = result.state
-        # Upsert round row for the *current* round if a candidate exists.
-        if new_state.candidate is not None:
+        completed = result.completed_round
+
+        # Persist the current round's candidate + quality; if the same round
+        # also completed (eval available), merge into one upsert below.
+        if new_state.candidate is not None and (
+            completed is None or completed.refinement_round != new_state.current_round
+        ):
             self.store.upsert_round(
                 item_id=new_state.item_id,
                 round_n=new_state.current_round,
                 candidate=new_state.candidate,
                 quality=new_state.quality,
             )
-        # Completed-round bookkeeping (eval + finalize + accepted).
-        if result.completed_round is not None:
-            cr = result.completed_round
+
+        if completed is not None:
             self.store.upsert_round(
                 item_id=new_state.item_id,
-                round_n=cr.refinement_round,
-                candidate=cr.candidate,
-                quality=cr.quality,
-                evaluation=cr.evaluation,
+                round_n=completed.refinement_round,
+                candidate=completed.candidate,
+                quality=completed.quality,
+                evaluation=completed.evaluation,
             )
-            if new_state.state == State.ACCEPTED:
-                self.store.finalize_round(new_state.item_id, cr.refinement_round, accepted=True)
-                accepted_payload = self.domain.format_accepted(cr.candidate, _accepted_extras(new_state, cr))
-                self.store.insert_accepted(
-                    item_id=new_state.item_id, round_n=cr.refinement_round,
-                    payload=accepted_payload,
+            accepted = new_state.state == State.ACCEPTED
+            self.store.finalize_round(
+                new_state.item_id, completed.refinement_round, accepted=accepted,
+            )
+            if accepted:
+                payload = self.domain.format_accepted(
+                    completed.candidate, _accepted_extras(new_state, completed),
                 )
-            else:
-                self.store.finalize_round(new_state.item_id, cr.refinement_round, accepted=False)
-        # Persist scores produced this step.
+                self.store.insert_accepted(
+                    item_id=new_state.item_id,
+                    round_n=completed.refinement_round,
+                    payload=payload,
+                )
+
         for sr in result.scores_to_persist:
             self.store.insert_score(
-                item_id=new_state.item_id, round_n=new_state.current_round,
+                item_id=new_state.item_id,
+                round_n=new_state.current_round,
                 score=sr.score,
                 solver_response_id=sr.solver_response_id,
                 judge_response_id=sr.judge_response_id,
             )
-        # Persist last_feedback into the previous round's reflection column
-        # so resume can rehydrate it.
-        if (new_state.state == State.NEED_CANDIDATE and new_state.current_round > 1
-                and new_state.last_feedback):
+
+        # Stash last_feedback into the previous round's reflection column so
+        # a resume can rehydrate it for the new challenger.
+        if (
+            new_state.state == State.NEED_CANDIDATE
+            and new_state.current_round > 1
+            and new_state.last_feedback
+        ):
             self.store.upsert_round(
                 item_id=new_state.item_id,
                 round_n=new_state.current_round - 1,
                 reflection=json.dumps(list(new_state.last_feedback)),
             )
-        # New requests.
+
         if result.new_requests:
             self.store.insert_requests([_request_to_row(r) for r in result.new_requests])
-        # Item-level updates.
-        final_round = (new_state.current_round
-                       if new_state.state in TERMINAL_STATES else None)
+
+        final_round = (
+            new_state.current_round if new_state.state in TERMINAL_STATES else None
+        )
         self.store.update_item(
             new_state.item_id,
             state=new_state.state.value,
             current_round=new_state.current_round,
             final_round=final_round,
-            rejection_reasons=(list(new_state.rejection_reasons) or None
-                               if new_state.state == State.REJECTED else None),
+            rejection_reasons=(
+                list(new_state.rejection_reasons) or None
+                if new_state.state == State.REJECTED else None
+            ),
         )
-
-    # ---- dispatching pending requests ----------------------------------
 
     def _dispatch_pending(self) -> int:
         claim_limit = max(1, self.cfg.dispatcher.concurrency)
@@ -304,15 +313,13 @@ class Dispatcher:
         self.fulfill(claimed, self)
         return len(claimed)
 
-    # ---- state reconstruction ------------------------------------------
-
     def _load_item_state(self, item_row) -> ItemState:
         item_id = item_row["item_id"]
         rounds_rows = self.store.rounds_for_item(item_id)
         current_round = int(item_row["current_round"])
 
         rounds_history: list[Round] = []
-        current_round_blob: Optional[dict] = None
+        current_round_blob: dict | None = None
         for r in rounds_rows:
             obj = _row_to_round(r)
             if r["round_n"] < current_round:
@@ -367,38 +374,21 @@ class Dispatcher:
         )
 
     def _hydrate_responses(self, item_id: str, since_ts: str) -> list[StepResponse]:
-        rows = self.store.responses_since(item_id, since_ts)
+        """Pull responses + matching request/parent fields in a single query."""
         out: list[StepResponse] = []
-        for rr in rows:
-            req = self.store.get_request(rr.request_id)
-            if req is None:
-                continue
-            sr = StepResponse(
-                request_id=rr.request_id,
-                role=req.role,
-                round_n=req.round_n,
-                attempt=req.attempt,
-                text=rr.text,
-                parent_response_id=req.parent_response_id,
-            )
-            if req.role == "judge" and req.parent_response_id:
-                parent_req = self.store.get_request(req.parent_response_id)
-                parent_resp = self.store.get_response(req.parent_response_id)
-                if parent_req is not None:
-                    sr = StepResponse(
-                        request_id=rr.request_id,
-                        role=req.role,
-                        round_n=req.round_n,
-                        attempt=req.attempt,
-                        text=rr.text,
-                        parent_response_id=req.parent_response_id,
-                        solver_response_text=parent_resp.text if parent_resp else "",
-                        solver_role=parent_req.role,
-                    )
-            out.append(sr)
+        for row in self.store.hydrate_responses(item_id, since_ts):
+            is_judge = row["role"] == "judge" and row["parent_response_id"] is not None
+            out.append(StepResponse(
+                request_id=row["request_id"],
+                role=row["role"],
+                round_n=row["round_n"],
+                attempt=row["attempt"],
+                text=row["text"],
+                parent_response_id=row["parent_response_id"],
+                solver_response_text=(row["parent_text"] or "") if is_judge else None,
+                solver_role=row["parent_role"] if is_judge else None,
+            ))
         return out
-
-    # ---- resume / unrecoverable ---------------------------------------
 
     def _normalize_for_resume(self) -> None:
         if not self.cfg.resume:
@@ -415,11 +405,10 @@ class Dispatcher:
         for item_id in self.store.unrecoverable_items(self.run_id, cap):
             logger.warning("item {} hit failure cap; marking REJECTED", item_id)
             self.store.update_item(
-                item_id, state=State.REJECTED.value,
+                item_id,
+                state=ITEM_REJECTED,
                 rejection_reasons=[f"unrecoverable: request failed {cap} times"],
             )
-
-    # ---- budget / signals ----------------------------------------------
 
     def _budget_exceeded(self) -> bool:
         cap = self.cfg.budget_usd
@@ -428,8 +417,11 @@ class Dispatcher:
         spent = self.store.cost_so_far(self.run_id)
         if spent >= cap:
             return True
-        if spent >= 0.8 * cap and not getattr(self, "_budget_warned", False):
-            logger.warning("cost ${:.4f} reached 80% of budget ${:.4f}", spent, cap)
+        if spent >= _BUDGET_WARN_FRACTION * cap and not self._budget_warned:
+            logger.warning(
+                "cost ${:.4f} reached {:.0%} of budget ${:.4f}",
+                spent, _BUDGET_WARN_FRACTION, cap,
+            )
             self._budget_warned = True
         return False
 
@@ -442,33 +434,25 @@ class Dispatcher:
                 prev = signal.signal(sig, handler)
                 self._installed_handlers.append((sig, prev))
             except (ValueError, OSError):
-                # off-main-thread: signals can't be installed here. fine.
+                # Off-main-thread: signal installation is restricted; ignore.
                 pass
 
     def _uninstall_signal_handlers(self) -> None:
         for sig, prev in self._installed_handlers:
-            try:
+            with contextlib.suppress(ValueError, OSError):
                 signal.signal(sig, prev)
-            except (ValueError, OSError):
-                pass
         self._installed_handlers.clear()
-
-    # ---- summary -------------------------------------------------------
 
     def _summarize(self) -> RunSummary:
         counts = self.store.items_terminal_counts(self.run_id)
         return RunSummary(
             run_id=self.run_id,
-            accepted=counts.get(State.ACCEPTED.value, 0),
-            rejected=counts.get(State.REJECTED.value, 0),
+            accepted=counts.get(ITEM_ACCEPTED, 0),
+            rejected=counts.get(ITEM_REJECTED, 0),
             state_counts=counts,
             cost_usd=self.store.cost_so_far(self.run_id),
         )
 
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 
 def _request_to_row(r: LLMRequest) -> dict:
     return {
@@ -485,20 +469,28 @@ def _request_to_row(r: LLMRequest) -> dict:
 
 
 def _row_to_round(row) -> Round:
-    cand = (Candidate.model_validate_json(row["candidate_blob"])
-            if row["candidate_blob"] else None)
+    candidate = (Candidate.model_validate_json(row["candidate_blob"])
+                 if row["candidate_blob"] else None)
     quality = (QualityCheck.model_validate_json(row["quality_blob"])
                if row["quality_blob"] else None)
-    ev = (EvalReport.model_validate_json(row["eval_blob"])
-          if row["eval_blob"] else None)
+    evaluation = (EvalReport.model_validate_json(row["eval_blob"])
+                  if row["eval_blob"] else None)
+    # A historical round (round_n < current_round) always has a persisted
+    # candidate; the placeholders here only matter for partially-written rows
+    # observed mid-write during resume.
     return Round(
         refinement_round=int(row["round_n"]),
-        candidate=cand or Candidate(candidate_id="x", domain="x", source_id="x",
-                                    payload={}, rubric=[]),
+        candidate=candidate or _PLACEHOLDER_CANDIDATE,
         quality=quality or QualityCheck(passed=False),
-        evaluation=ev,
+        evaluation=evaluation,
         reflection=row["reflection"],
     )
+
+
+_PLACEHOLDER_CANDIDATE = Candidate(
+    candidate_id="missing", domain="missing", source_id="missing",
+    payload={}, rubric=[],
+)
 
 
 def _accepted_extras(item: ItemState, round_obj: Round) -> dict:

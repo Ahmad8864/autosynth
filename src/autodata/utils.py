@@ -100,6 +100,13 @@ def write_pydantic(path: Path, obj: BaseModel | list[BaseModel]) -> None:
     write_json(path, data)
 
 
+def write_yaml_snapshot(path: Path, model: BaseModel) -> None:
+    """Snapshot a Pydantic model as YAML for later resume / inspection."""
+    import yaml
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(model.model_dump(mode="json"), sort_keys=False))
+
+
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:

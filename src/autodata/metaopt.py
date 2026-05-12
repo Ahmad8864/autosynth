@@ -20,7 +20,6 @@ import random
 from pathlib import Path
 from typing import Any
 
-import yaml
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -30,7 +29,13 @@ from autodata.harness import DEFAULT_HARNESS, HarnessSpec, make_harness
 from autodata.llm import LLMClient, LLMConfig, LLMRequest
 from autodata.runner import Runner
 from autodata.store import Store
-from autodata.utils import make_run_id, stable_id, write_json, write_pydantic
+from autodata.utils import (
+    make_run_id,
+    stable_id,
+    write_json,
+    write_pydantic,
+    write_yaml_snapshot,
+)
 
 # ---------------------------------------------------------------------------
 # Population / record types
@@ -240,20 +245,20 @@ def evaluate_harness(
 
 
 def aggregate_failures_from_db(run_db_path: Path, *, sample_size: int = 3) -> dict[str, Any]:
-    """Compute the failure histogram for an inner run by querying its run.db."""
+    """Compute the failure histogram for an inner run from its run.db."""
+    empty = {"total_rounds": 0, "rejected_rounds": 0, "reason_counts": {}, "samples": []}
     if not run_db_path.exists():
-        return {"total_rounds": 0, "rejected_rounds": 0, "reason_counts": {}, "samples": []}
+        return empty
     store = Store(run_db_path)
     try:
+        run_row = store.first_run()
+        if run_row is None:
+            return empty
         reason_counts: dict[str, int] = {}
         samples: list[dict[str, Any]] = []
-        cur = store.conn.execute(
-            """SELECT r.candidate_blob, r.quality_blob, r.eval_blob, r.accepted
-               FROM rounds r JOIN items i ON i.item_id = r.item_id"""
-        )
         total = 0
         rejected = 0
-        for row in cur.fetchall():
+        for row in store.failure_rounds(run_row["run_id"]):
             total += 1
             quality = json.loads(row["quality_blob"]) if row["quality_blob"] else None
             ev = json.loads(row["eval_blob"]) if row["eval_blob"] else None
@@ -263,7 +268,9 @@ def aggregate_failures_from_db(run_db_path: Path, *, sample_size: int = 3) -> di
                     key = f"quality:{str(f).split(':')[0]}"
                     reason_counts[key] = reason_counts.get(key, 0) + 1
                 if len(samples) < sample_size:
-                    samples.append({"reason": "quality_failed", "failures": quality.get("failures") or []})
+                    samples.append(
+                        {"reason": "quality_failed", "failures": quality.get("failures") or []}
+                    )
                 continue
             if ev is None or ev.get("accepted"):
                 continue
@@ -305,10 +312,7 @@ class MetaOptimizer:
         self.root = Path(run_cfg.output_dir) / self.meta.output_subdir / self.run_id
         self.root.mkdir(parents=True, exist_ok=True)
 
-        # Snapshot config as YAML, consistent with RunWriter.snapshot_config.
-        (self.root / "config.snapshot.yaml").write_text(
-            yaml.safe_dump(self.cfg.model_dump(mode="json"), sort_keys=False)
-        )
+        write_yaml_snapshot(self.root / "config.snapshot.yaml", self.cfg)
 
         self.seed_harness = seed_harness or self._load_seed()
         # Mutator client; falls back to the orchestrator's model. The mutator

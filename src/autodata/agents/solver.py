@@ -1,12 +1,8 @@
-"""Weak / strong solver wrapper.
+"""Weak / strong solver: builds one solver attempt as an :class:`LLMRequest`.
 
-There is one class; the role label is `weak` or `strong`. The actual
-difficulty difference comes from the configured model + temperature, not from
-adversarial prompting (the paper warns against telling a weak model to be
-weak — that triggers gaming).
-
-This module also exposes the new module-level ``build_request`` helper used
-by the event-sourced pipeline.
+The difficulty difference between weak and strong is driven by the configured
+model + temperature, not by adversarial prompting — telling a weak model to
+"act weak" triggers gaming, per the paper.
 """
 
 from __future__ import annotations
@@ -45,5 +41,3 @@ def build_request(
         attempt=attempt,
         json_mode=False,
     )
-
-

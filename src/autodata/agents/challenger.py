@@ -1,8 +1,4 @@
-"""Challenger: turns grounding + feedback into a structured Candidate.
-
-Module-level ``build_request`` / ``parse_response`` are consumed by the
-event-sourced pipeline.
-"""
+"""Challenger: turns grounding + feedback into a structured :class:`Candidate`."""
 
 from __future__ import annotations
 
@@ -84,5 +80,3 @@ def parse_response(
         reference_output=reference_output,
         metadata={"round": round_n, "source": source_metadata or {}},
     )
-
-

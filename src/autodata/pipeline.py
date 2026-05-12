@@ -1,51 +1,38 @@
 """Pure pipeline: state machine that turns responses into requests.
 
-This is the keystone of the event-sourced architecture. ``step()`` is a pure
-function: ``(state, fresh_responses) -> (new_state, new_requests,
+``step()`` is pure: ``(state, fresh_responses) -> (new_state, new_requests,
 completed_round?, scores_to_persist?)``. No I/O, no time, no randomness.
-
 The dispatcher orders responses by ``request_id`` before calling ``step()``
 so concurrent fulfillment doesn't perturb state evolution.
 
-States (5 + 2 terminal):
+States (5 + 2 terminal)::
+
     PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES
               ↘ NEED_REFLECTION ↗
               ↘ ACCEPTED | REJECTED
 
 Sync work (structural validation, safety filter, acceptance evaluation)
 happens *inside* the response handler for the preceding async state.
-
-See MIGRATION_PLAN.md §2.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any
 
 from autodata.agents import challenger as challenger_agent
 from autodata.agents import reflector as reflector_agent
 from autodata.agents import solver as solver_agent
 from autodata.agents import verifier as verifier_agent
-from autodata.config import AcceptanceConfig, RunConfig
+from autodata.config import RunConfig
 from autodata.domain import DomainAdapter, GroundingItem
 from autodata.evaluator import evaluate
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec
 from autodata.llm import LLMRequest
-from autodata.safety import SafetyFilter, SafetyVerdict
-from autodata.schemas import (
-    Candidate,
-    EvalReport,
-    QualityCheck,
-    Round,
-    SolverScore,
-)
+from autodata.safety import SafetyFilter
+from autodata.schemas import Candidate, QualityCheck, Round, SolverScore
 
-
-# ---------------------------------------------------------------------------
-# Types
-# ---------------------------------------------------------------------------
 
 class State(str, Enum):
     PENDING = "PENDING"
@@ -72,9 +59,9 @@ class StepResponse:
     round_n: int
     attempt: int
     text: str
-    parent_response_id: Optional[str] = None
-    solver_response_text: Optional[str] = None  # judge only
-    solver_role: Optional[str] = None           # judge only
+    parent_response_id: str | None = None
+    solver_response_text: str | None = None  # judge only
+    solver_role: str | None = None           # judge only
 
 
 @dataclass(frozen=True)
@@ -95,8 +82,8 @@ class ItemState:
     state: State
     current_round: int                              # 1-indexed
     rounds_history: tuple[Round, ...] = ()
-    candidate: Optional[Candidate] = None
-    quality: Optional[QualityCheck] = None
+    candidate: Candidate | None = None
+    quality: QualityCheck | None = None
     weak_scores: tuple[SolverScore, ...] = ()
     strong_scores: tuple[SolverScore, ...] = ()
     last_feedback: tuple[str, ...] = ()
@@ -111,13 +98,9 @@ class ItemState:
 class StepResult:
     state: ItemState
     new_requests: tuple[LLMRequest, ...] = ()
-    completed_round: Optional[Round] = None
+    completed_round: Round | None = None
     scores_to_persist: tuple[ScoreRecord, ...] = ()
 
-
-# ---------------------------------------------------------------------------
-# Model-key resolution
-# ---------------------------------------------------------------------------
 
 _ROLE_TO_CFG_ATTR: dict[str, str] = {
     "challenger": "challenger",
@@ -130,13 +113,9 @@ _ROLE_TO_CFG_ATTR: dict[str, str] = {
 
 
 def model_key_for(cfg: RunConfig, role: str) -> str:
-    attr = _ROLE_TO_CFG_ATTR[role]
-    return getattr(cfg, attr).provider_model
+    """Look up the configured provider model for a pipeline role."""
+    return getattr(cfg, _ROLE_TO_CFG_ATTR[role]).provider_model
 
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
 
 def step(
     item: ItemState,
@@ -146,7 +125,7 @@ def step(
     harness: HarnessSpec,
     domain: DomainAdapter,
     grounding: GroundingItem,
-    safety_filter: Optional[SafetyFilter] = None,
+    safety_filter: SafetyFilter | None = None,
 ) -> StepResult:
     """Pure state transition. See module docstring."""
     if item.state in TERMINAL_STATES:
@@ -170,10 +149,6 @@ def step(
     raise ValueError(f"unknown state {item.state!r}")
 
 
-# ---------------------------------------------------------------------------
-# Per-state handlers
-# ---------------------------------------------------------------------------
-
 def _emit_challenger(item, cfg, harness, domain, grounding) -> StepResult:
     req = challenger_agent.build_request(
         item_id=item.item_id,
@@ -192,9 +167,8 @@ def _emit_challenger(item, cfg, harness, domain, grounding) -> StepResult:
 def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filter) -> StepResult:
     resp = _find_role(relevant, "challenger")
     if resp is None:
-        return StepResult(state=item)  # partial-completion noop
+        return StepResult(state=item)
 
-    # Parse
     try:
         candidate = challenger_agent.parse_response(
             resp.text,
@@ -210,29 +184,27 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
             failure_quality=QualityCheck(passed=False, failures=[f"challenger_parse_error:{e}"]),
         )
 
-    # Structural validation
     struct_errs = domain.validate_candidate(candidate)
     if struct_errs:
-        item_with_cand = replace(item, candidate=candidate)
         return _go_to_reflection_or_reject(
-            item_with_cand, cfg, harness, domain, grounding,
-            failure_quality=QualityCheck(passed=False, failures=struct_errs,
-                                         notes="structural validation failed"),
+            replace(item, candidate=candidate), cfg, harness, domain, grounding,
+            failure_quality=QualityCheck(
+                passed=False, failures=struct_errs, notes="structural validation failed",
+            ),
         )
 
-    # Safety
     if cfg.safety.enabled and safety_filter is not None:
-        verdict = safety_filter(_concat_payload(candidate.payload))
+        verdict = safety_filter(_payload_text(candidate.payload))
         if not verdict.allowed:
-            item_with_cand = replace(item, candidate=candidate)
             return _go_to_reflection_or_reject(
-                item_with_cand, cfg, harness, domain, grounding,
-                failure_quality=QualityCheck(passed=False,
-                                             failures=[f"safety:{r}" for r in verdict.reasons],
-                                             notes="safety filter rejected"),
+                replace(item, candidate=candidate), cfg, harness, domain, grounding,
+                failure_quality=QualityCheck(
+                    passed=False,
+                    failures=[f"safety:{r}" for r in verdict.reasons],
+                    notes="safety filter rejected",
+                ),
             )
 
-    # All sync checks pass: emit quality_req → NEED_QUALITY.
     qreq = verifier_agent.build_quality_request(
         item_id=item.item_id, round_n=item.current_round,
         model_key=model_key_for(cfg, "quality"),
@@ -249,84 +221,44 @@ def _on_quality(item, relevant, cfg, harness, domain, grounding) -> StepResult:
 
     quality = verifier_agent.parse_quality(resp.text)
     if not quality.passed:
-        item_with_q = replace(item, quality=quality)
-        return _go_to_reflection_or_reject(item_with_q, cfg, harness, domain, grounding,
-                                           failure_quality=quality)
+        return _go_to_reflection_or_reject(
+            replace(item, quality=quality), cfg, harness, domain, grounding,
+            failure_quality=quality,
+        )
 
-    # Emit solver requests: N weak + N strong, all at once.
-    reqs: list[LLMRequest] = []
-    for k in range(cfg.loop.weak_samples):
-        reqs.append(solver_agent.build_request(
-            item_id=item.item_id, round_n=item.current_round, attempt=k,
-            model_key=model_key_for(cfg, "weak"),
-            candidate=item.candidate, role="weak", domain=domain, harness=harness,
-        ))
-    for k in range(cfg.loop.strong_samples):
-        reqs.append(solver_agent.build_request(
-            item_id=item.item_id, round_n=item.current_round, attempt=k,
-            model_key=model_key_for(cfg, "strong"),
-            candidate=item.candidate, role="strong", domain=domain, harness=harness,
-        ))
-    new_state = replace(item, state=State.NEED_SCORES, quality=quality,
-                        weak_scores=(), strong_scores=(), judge_response_for_solver={})
-    return StepResult(state=new_state, new_requests=tuple(reqs))
+    reqs = tuple(_build_solver_requests(item, cfg, harness, domain))
+    new_state = replace(
+        item, state=State.NEED_SCORES, quality=quality,
+        weak_scores=(), strong_scores=(), judge_response_for_solver={},
+    )
+    return StepResult(state=new_state, new_requests=reqs)
+
+
+def _build_solver_requests(item, cfg, harness, domain):
+    for role, n in (("weak", cfg.loop.weak_samples), ("strong", cfg.loop.strong_samples)):
+        for k in range(n):
+            yield solver_agent.build_request(
+                item_id=item.item_id, round_n=item.current_round, attempt=k,
+                model_key=model_key_for(cfg, role),
+                candidate=item.candidate, role=role, domain=domain, harness=harness,
+            )
 
 
 def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
-    """The throughput-unlock state. Handles two kinds of responses:
+    """Two kinds of responses come through here:
 
       - solver response → emit a judge request (no state change)
       - judge response  → record a SolverScore (no state change *unless*
                           all 2N scores are in, in which case we evaluate)
     """
-    new_requests: list[LLMRequest] = []
-    new_weak = list(item.weak_scores)
-    new_strong = list(item.strong_scores)
-    new_scores: list[ScoreRecord] = []
-    judge_for_solver = dict(item.judge_response_for_solver)
+    judge_requests = _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain)
+    new_weak, new_strong, new_scores, judge_for_solver = _ingest_judge_responses(item, relevant)
 
-    # 1. Emit judge requests for any newly-arrived solver responses.
-    for r in relevant:
-        if r.role in ("weak", "strong"):
-            jreq = verifier_agent.build_judge_request(
-                item_id=item.item_id, round_n=item.current_round, attempt=r.attempt,
-                model_key=model_key_for(cfg, "judge"),
-                candidate=item.candidate, solver_response=r.text,
-                solver_role=r.role, domain=domain, harness=harness,
-                parent_response_id=r.request_id,
-            )
-            new_requests.append(jreq)
-
-    # 2. Process judge responses → SolverScores + ScoreRecords.
-    for r in relevant:
-        if r.role != "judge":
-            continue
-        solver_text = r.solver_response_text or ""
-        solver_role = _solver_role_from_judge(r)
-        if solver_role is None or item.candidate is None:
-            continue
-        score = verifier_agent.parse_judge(
-            r.text, candidate=item.candidate, solver_role=solver_role,
-            attempt=r.attempt, solver_response_text=solver_text,
-        )
-        if solver_role == "weak":
-            new_weak.append(score)
-        else:
-            new_strong.append(score)
-        # parent_response_id is the solver's request_id (== response_id).
-        if r.parent_response_id is not None:
-            judge_for_solver[r.parent_response_id] = r.request_id
-            new_scores.append(ScoreRecord(
-                score=score,
-                solver_response_id=r.parent_response_id,
-                judge_response_id=r.request_id,
-            ))
-
-    # 3. Have we collected all 2N scores?
-    expected_weak = cfg.loop.weak_samples
-    expected_strong = cfg.loop.strong_samples
-    if len(new_weak) < expected_weak or len(new_strong) < expected_strong:
-        # Partial completion — return updated accumulators, no state change.
+    have_all_scores = (
+        len(new_weak) >= cfg.loop.weak_samples
+        and len(new_strong) >= cfg.loop.strong_samples
+    )
+    if not have_all_scores:
         new_state = replace(
             item,
             weak_scores=tuple(new_weak),
@@ -335,53 +267,104 @@ def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
         )
         return StepResult(
             state=new_state,
-            new_requests=tuple(new_requests),
+            new_requests=tuple(judge_requests),
             scores_to_persist=tuple(new_scores),
         )
 
-    # 4. All scores in — evaluate acceptance.
-    ev: EvalReport = evaluate(new_weak, new_strong, item.quality, cfg.acceptance)
+    return _finalize_scored_round(
+        item, cfg, harness, domain,
+        new_weak=new_weak, new_strong=new_strong,
+        new_scores=new_scores, judge_requests=judge_requests,
+    )
+
+
+def _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain) -> list[LLMRequest]:
+    out: list[LLMRequest] = []
+    for r in relevant:
+        if r.role not in ("weak", "strong"):
+            continue
+        out.append(verifier_agent.build_judge_request(
+            item_id=item.item_id, round_n=item.current_round, attempt=r.attempt,
+            model_key=model_key_for(cfg, "judge"),
+            candidate=item.candidate, solver_response=r.text,
+            solver_role=r.role, domain=domain, harness=harness,
+            parent_response_id=r.request_id,
+        ))
+    return out
+
+
+def _ingest_judge_responses(item, relevant):
+    new_weak = list(item.weak_scores)
+    new_strong = list(item.strong_scores)
+    new_scores: list[ScoreRecord] = []
+    judge_for_solver = dict(item.judge_response_for_solver)
+
+    for r in relevant:
+        if r.role != "judge" or item.candidate is None or r.solver_role is None:
+            continue
+        score = verifier_agent.parse_judge(
+            r.text, candidate=item.candidate, solver_role=r.solver_role,
+            attempt=r.attempt, solver_response_text=r.solver_response_text or "",
+        )
+        (new_weak if r.solver_role == "weak" else new_strong).append(score)
+        if r.parent_response_id is not None:
+            judge_for_solver[r.parent_response_id] = r.request_id
+            new_scores.append(ScoreRecord(
+                score=score,
+                solver_response_id=r.parent_response_id,
+                judge_response_id=r.request_id,
+            ))
+    return new_weak, new_strong, new_scores, judge_for_solver
+
+
+def _finalize_scored_round(
+    item, cfg, harness, domain,
+    *, new_weak, new_strong, new_scores, judge_requests,
+) -> StepResult:
+    evaluation = evaluate(new_weak, new_strong, item.quality, cfg.acceptance)
     round_obj = Round(
         refinement_round=item.current_round,
         candidate=item.candidate,
         quality=item.quality,
-        evaluation=ev,
+        evaluation=evaluation,
         reflection=None,
         ended_at=datetime.now(timezone.utc),
     )
+    rounds_history = item.rounds_history + (round_obj,)
+    common = dict(
+        weak_scores=tuple(new_weak),
+        strong_scores=tuple(new_strong),
+        rounds_history=rounds_history,
+    )
 
-    if ev.accepted:
-        new_state = replace(item, state=State.ACCEPTED,
-                            weak_scores=tuple(new_weak), strong_scores=tuple(new_strong),
-                            rounds_history=item.rounds_history + (round_obj,))
+    if evaluation.accepted:
+        new_state = replace(item, state=State.ACCEPTED, **common)
         return StepResult(
-            state=new_state, new_requests=tuple(new_requests),
+            state=new_state, new_requests=tuple(judge_requests),
             completed_round=round_obj, scores_to_persist=tuple(new_scores),
         )
 
-    # Rejected this round. Reflect or terminate.
     if item.current_round < cfg.loop.max_rounds:
         rreq = reflector_agent.build_request(
             item_id=item.item_id, round_n=item.current_round,
             model_key=model_key_for(cfg, "reflector"),
-            prior_rounds=list(item.rounds_history) + [round_obj],
+            prior_rounds=list(rounds_history),
             domain_name=domain.name, leakage_rules=domain.leakage_rules(),
             acceptance=cfg.acceptance, harness=harness,
         )
-        new_state = replace(item, state=State.NEED_REFLECTION,
-                            weak_scores=tuple(new_weak), strong_scores=tuple(new_strong),
-                            rounds_history=item.rounds_history + (round_obj,))
+        new_state = replace(item, state=State.NEED_REFLECTION, **common)
         return StepResult(
-            state=new_state, new_requests=tuple(new_requests) + (rreq,),
+            state=new_state, new_requests=tuple(judge_requests) + (rreq,),
             completed_round=round_obj, scores_to_persist=tuple(new_scores),
         )
 
-    new_state = replace(item, state=State.REJECTED,
-                        weak_scores=tuple(new_weak), strong_scores=tuple(new_strong),
-                        rounds_history=item.rounds_history + (round_obj,),
-                        rejection_reasons=tuple(ev.rejection_reasons))
+    new_state = replace(
+        item, state=State.REJECTED,
+        rejection_reasons=tuple(evaluation.rejection_reasons),
+        **common,
+    )
     return StepResult(
-        state=new_state, new_requests=tuple(new_requests),
+        state=new_state, new_requests=tuple(judge_requests),
         completed_round=round_obj, scores_to_persist=tuple(new_scores),
     )
 
@@ -394,11 +377,9 @@ def _on_reflection(item, relevant, cfg, harness, domain, grounding) -> StepResul
     feedback = list(reflection.feedback)
     if reflection.new_angle:
         feedback.append(f"NEW_ANGLE: {reflection.new_angle}")
-    # Advance round, clear per-round accumulators, emit next challenger.
-    next_round = item.current_round + 1
     bumped = replace(
         item,
-        current_round=next_round,
+        current_round=item.current_round + 1,
         candidate=None,
         quality=None,
         weak_scores=(),
@@ -409,24 +390,17 @@ def _on_reflection(item, relevant, cfg, harness, domain, grounding) -> StepResul
     return _emit_challenger(bumped, cfg, harness, domain, grounding)
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _find_role(responses: list[StepResponse], role: str) -> Optional[StepResponse]:
+def _find_role(responses: list[StepResponse], role: str) -> StepResponse | None:
     for r in responses:
         if r.role == role:
             return r
     return None
 
 
-def _solver_role_from_judge(judge_resp: StepResponse) -> Optional[str]:
-    return judge_resp.solver_role
-
-
-def _go_to_reflection_or_reject(item, cfg, harness, domain, grounding, *,
-                                failure_quality: QualityCheck) -> StepResult:
-    """Drive the unified rejection path: emit reflector or terminate REJECTED."""
+def _go_to_reflection_or_reject(
+    item, cfg, harness, domain, grounding, *, failure_quality: QualityCheck,
+) -> StepResult:
+    """Unified rejection path: emit reflector or terminate REJECTED."""
     cand = item.candidate or Candidate(
         candidate_id="invalid", domain=item.domain, source_id=item.source_id,
         payload={}, rubric=[], reference_output=None,
@@ -439,24 +413,29 @@ def _go_to_reflection_or_reject(item, cfg, harness, domain, grounding, *,
         reflection=None,
         ended_at=datetime.now(timezone.utc),
     )
+    rounds_history = item.rounds_history + (round_obj,)
     if item.current_round < cfg.loop.max_rounds:
         rreq = reflector_agent.build_request(
             item_id=item.item_id, round_n=item.current_round,
             model_key=model_key_for(cfg, "reflector"),
-            prior_rounds=list(item.rounds_history) + [round_obj],
+            prior_rounds=list(rounds_history),
             domain_name=domain.name, leakage_rules=domain.leakage_rules(),
             acceptance=cfg.acceptance, harness=harness,
         )
-        new_state = replace(item, state=State.NEED_REFLECTION, quality=failure_quality,
-                            rounds_history=item.rounds_history + (round_obj,))
+        new_state = replace(
+            item, state=State.NEED_REFLECTION,
+            quality=failure_quality, rounds_history=rounds_history,
+        )
         return StepResult(state=new_state, new_requests=(rreq,), completed_round=round_obj)
+
     new_state = replace(
         item, state=State.REJECTED, quality=failure_quality,
-        rounds_history=item.rounds_history + (round_obj,),
+        rounds_history=rounds_history,
         rejection_reasons=tuple(failure_quality.failures or ["unspecified"]),
     )
     return StepResult(state=new_state, new_requests=(), completed_round=round_obj)
 
 
-def _concat_payload(payload: dict) -> str:
+def _payload_text(payload: dict) -> str:
+    """Concatenate stringy/numeric payload values for the safety filter."""
     return " ".join(str(v) for v in payload.values() if isinstance(v, (str, int, float)))

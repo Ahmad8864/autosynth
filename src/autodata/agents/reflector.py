@@ -1,11 +1,8 @@
 """Reflector / RecipeUpdater.
 
-Reads the prior rounds for a source item and emits a small list of
-*targeted* feedback bullets for the challenger's next attempt, plus a hint
-toward a different angle. This is the 'updated recipe' from the paper.
-
-Module-level ``build_request`` / ``parse_response`` helpers used by the
-event-sourced pipeline.
+Reads the prior rounds for an item and emits a small list of *targeted*
+feedback bullets for the next challenger attempt, plus a hint toward a
+different angle. This is the "updated recipe" from the paper.
 """
 
 from __future__ import annotations
@@ -112,10 +109,8 @@ def parse_response(text: str) -> ReflectionResult:
     )
 
 
-
-
 def _summarize_payload(payload: dict[str, Any], limit: int = 140) -> str:
-    # Pick the first stringy field for a compact reference.
+    """Pick the first stringy field for a compact reference, else dump."""
     for v in payload.values():
         if isinstance(v, str):
             return v[:limit]
