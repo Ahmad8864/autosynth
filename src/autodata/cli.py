@@ -118,15 +118,20 @@ def metaopt_cmd(
 @app.command("init-domain")
 def init_domain_cmd(
     name: str = typer.Argument(..., help="snake_case domain name"),
-    out: Path = typer.Option(Path("my_domain.py"), "--out", "-o"),
+    out: Path | None = typer.Option(
+        None, "--out", "-o",
+        help="Output file (defaults to ./<name>.py)",
+    ),
 ):
     """Write a new DomainAdapter skeleton you can fill in."""
-    if out.exists():
-        console.print(f"[red]refusing to overwrite[/red] {out}")
+    target = out if out is not None else Path(f"{name}.py")
+    if target.exists():
+        console.print(f"[red]refusing to overwrite[/red] {target}")
         raise typer.Exit(1)
-    out.write_text(_render_domain_template(name=name, cls=_camel(name)))
-    console.print(f"[green]wrote[/green] {out}")
-    console.print(f"Use it via:\n  domain:\n    path: {out}:{_camel(name)}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_render_domain_template(name=name, cls=_camel(name)))
+    console.print(f"[green]wrote[/green] {target}")
+    console.print(f"Use it via:\n  domain:\n    path: {target}:{_camel(name)}")
 
 
 @app.command("inspect-run")
