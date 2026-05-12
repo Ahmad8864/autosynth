@@ -3,6 +3,10 @@
 venv/
 env/
 
+# Secrets / per-directory env (direnv, dotenv)
+.envrc
+.env
+
 # Python bytecode
 __pycache__/
 *.py[cod]
