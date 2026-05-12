@@ -15,210 +15,28 @@ import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from autodata.schemas import Candidate, EvalReport, QualityCheck, SolverScore
+from autodata.store.schema import (
+    _SCHEMA_SQL,
+    ITEM_PENDING,
+    REQ_DONE,
+    REQ_FAILED,
+    REQ_IN_FLIGHT,
+    REQ_PENDING,
+    RUN_STATUS_ABORTED,
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_RUNNING,
+    SCHEMA_VERSION,
+    TERMINAL_ITEM_STATES,
+    _dumps,
+    _loads,
+    _utcnow,
+)
+from autodata.store.types import RequestRow, ResponseRow
 from autodata.utils import stable_id
-
-SCHEMA_VERSION = 1
-
-_SCHEMA_SQL = """
-CREATE TABLE runs (
-    run_id            TEXT PRIMARY KEY,
-    config_blob       TEXT NOT NULL,
-    harness_blob      TEXT,
-    started_at        TEXT NOT NULL,
-    last_active_at    TEXT NOT NULL,
-    finished_at       TEXT,
-    status            TEXT NOT NULL,
-    cost_usd_cap      REAL,
-    cost_usd_actual   REAL NOT NULL DEFAULT 0
-);
-
-CREATE TABLE items (
-    item_id           TEXT PRIMARY KEY,
-    run_id            TEXT NOT NULL,
-    source_id         TEXT NOT NULL,
-    domain            TEXT NOT NULL,
-    state             TEXT NOT NULL,
-    current_round     INTEGER NOT NULL DEFAULT 1,
-    source_metadata   TEXT,
-    created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL,
-    final_round       INTEGER,
-    rejection_reasons TEXT,
-    UNIQUE(run_id, source_id)
-);
-CREATE INDEX items_run_state ON items(run_id, state, updated_at);
-
-CREATE TABLE rounds (
-    round_id          TEXT PRIMARY KEY,
-    item_id           TEXT NOT NULL REFERENCES items(item_id),
-    round_n           INTEGER NOT NULL,
-    candidate_blob    TEXT,
-    quality_blob      TEXT,
-    eval_blob         TEXT,
-    reflection        TEXT,
-    started_at        TEXT NOT NULL,
-    ended_at          TEXT,
-    accepted          INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(item_id, round_n)
-);
-CREATE INDEX rounds_item ON rounds(item_id);
-
-CREATE TABLE requests (
-    request_id         TEXT PRIMARY KEY,
-    item_id            TEXT NOT NULL REFERENCES items(item_id),
-    round_n            INTEGER NOT NULL,
-    role               TEXT NOT NULL,
-    model_key          TEXT NOT NULL,
-    attempt            INTEGER NOT NULL DEFAULT 0,
-    messages_blob      TEXT NOT NULL,
-    json_mode          INTEGER NOT NULL DEFAULT 0,
-    parent_response_id TEXT,
-    status             TEXT NOT NULL,
-    submitted_at       TEXT,
-    completed_at       TEXT,
-    batch_id           TEXT,
-    failure_count      INTEGER NOT NULL DEFAULT 0,
-    last_error         TEXT
-);
-CREATE INDEX requests_status ON requests(status);
-CREATE INDEX requests_item ON requests(item_id, round_n);
-CREATE INDEX requests_batch ON requests(batch_id) WHERE batch_id IS NOT NULL;
-
-CREATE TABLE responses (
-    response_id        TEXT PRIMARY KEY,
-    request_id         TEXT NOT NULL REFERENCES requests(request_id),
-    model              TEXT NOT NULL,
-    text               TEXT NOT NULL,
-    prompt_tokens      INTEGER,
-    completion_tokens  INTEGER,
-    cost_usd           REAL,
-    duration_ms        INTEGER,
-    received_at        TEXT NOT NULL
-);
-CREATE INDEX responses_received ON responses(received_at);
-CREATE INDEX responses_request ON responses(request_id);
-
-CREATE TABLE solver_scores (
-    score_id           TEXT PRIMARY KEY,
-    round_id           TEXT NOT NULL REFERENCES rounds(round_id),
-    solver             TEXT NOT NULL,
-    attempt            INTEGER NOT NULL,
-    total              REAL NOT NULL,
-    per_criterion      TEXT,
-    failure_modes      TEXT,
-    raw_response       TEXT,
-    solver_response_id TEXT NOT NULL REFERENCES responses(response_id),
-    judge_response_id  TEXT NOT NULL REFERENCES responses(response_id),
-    UNIQUE(round_id, solver, attempt)
-);
-CREATE INDEX scores_round ON solver_scores(round_id, solver);
-
-CREATE TABLE accepted (
-    accepted_id        TEXT PRIMARY KEY,
-    item_id            TEXT NOT NULL REFERENCES items(item_id),
-    round_id           TEXT NOT NULL REFERENCES rounds(round_id),
-    payload_blob       TEXT NOT NULL,
-    accepted_at        TEXT NOT NULL
-);
-"""
-
-
-RUN_STATUS_RUNNING = "running"
-RUN_STATUS_COMPLETED = "completed"
-RUN_STATUS_ABORTED = "aborted"
-
-REQ_PENDING = "pending"
-REQ_IN_FLIGHT = "in_flight"
-REQ_DONE = "done"
-REQ_FAILED = "failed"
-
-# Item states. Defined here (not imported from pipeline.State) so the store
-# can stay free of pipeline dependencies and so raw SQL strings reference a
-# single source of truth. pipeline.State mirrors these values.
-ITEM_PENDING = "PENDING"
-ITEM_NEED_CANDIDATE = "NEED_CANDIDATE"
-ITEM_NEED_QUALITY = "NEED_QUALITY"
-ITEM_NEED_SCORES = "NEED_SCORES"
-ITEM_NEED_REFLECTION = "NEED_REFLECTION"
-ITEM_ACCEPTED = "ACCEPTED"
-ITEM_REJECTED = "REJECTED"
-TERMINAL_ITEM_STATES = (ITEM_ACCEPTED, ITEM_REJECTED)
-
-
-def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _dumps(obj: Any) -> str | None:
-    if obj is None:
-        return None
-    if hasattr(obj, "model_dump_json"):
-        return obj.model_dump_json()
-    return json.dumps(obj, default=str)
-
-
-def _loads(text: str | None) -> Any:
-    if text is None:
-        return None
-    return json.loads(text)
-
-
-@dataclass
-class RequestRow:
-    request_id: str
-    item_id: str
-    round_n: int
-    role: str
-    model_key: str
-    attempt: int
-    messages: list[dict[str, str]]
-    json_mode: bool
-    parent_response_id: str | None
-    status: str
-    submitted_at: str | None
-    completed_at: str | None
-    batch_id: str | None
-    failure_count: int
-    last_error: str | None
-
-    @classmethod
-    def from_row(cls, row: sqlite3.Row) -> RequestRow:
-        return cls(
-            request_id=row["request_id"],
-            item_id=row["item_id"],
-            round_n=row["round_n"],
-            role=row["role"],
-            model_key=row["model_key"],
-            attempt=row["attempt"],
-            messages=_loads(row["messages_blob"]) or [],
-            json_mode=bool(row["json_mode"]),
-            parent_response_id=row["parent_response_id"],
-            status=row["status"],
-            submitted_at=row["submitted_at"],
-            completed_at=row["completed_at"],
-            batch_id=row["batch_id"],
-            failure_count=row["failure_count"],
-            last_error=row["last_error"],
-        )
-
-
-@dataclass
-class ResponseRow:
-    response_id: str
-    request_id: str
-    model: str
-    text: str
-    prompt_tokens: int | None
-    completion_tokens: int | None
-    cost_usd: float | None
-    duration_ms: int | None
-    received_at: str
 
 
 class Store:
