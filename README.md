@@ -1,167 +1,42 @@
 # autodata
 
-A reusable, domain-agnostic implementation of **Autodata / Agentic
-Self-Instruct** (Meta FAIR, [research blog][paper]). An LLM-driven loop
-acts as a data scientist: it generates a candidate datapoint, audits it,
-runs a weak and a strong solver, judges both against an auto-generated
-rubric, and accepts only when the strong solver convincingly beats the
-weak one on a quality-passing example. Failed rounds feed targeted
-feedback back into the next attempt.
+Generate synthetic datasets with an LLM loop that proposes, audits, solves, and judges its own work. Inspired by Meta FAIR's [Autodata / Agentic Self-Instruct][paper] paper, but rewritten to be domain-agnostic: every domain-specific piece lives in a small Python plugin, and the runtime is the same regardless of whether you're generating math word problems, support-ticket triage data, or QA pairs from your own docs.
 
-This repo is **not** a re-implementation of the paper's CS-paper-specific
-setup. The reusable architecture has been extracted and every
-domain-specific component is a pluggable `DomainAdapter`.
+The headline trick: for each candidate datapoint, run a *weak* solver and a *strong* solver, score both against an LLM-generated rubric, and only keep the example if the strong solver clearly beats the weak one on a quality-passing example. Failed rounds are reflected on and fed back into the next attempt.
 
 [paper]: https://facebookresearch.github.io/RAM/blogs/autodata/
 
----
-
-## How this maps to Autodata / Agentic Self-Instruct
-
-| Paper concept                            | This repo                                       |
-| ---                                      | ---                                             |
-| Generate→verify→evaluate→reflect→refine  | `pipeline.step()` (pure state machine)          |
-| Challenger / quality / weak / strong / judge / reflector | `agents/*.py` builders + parsers |
-| Acceptance criteria (weak/strong/gap)    | `config.AcceptanceConfig` + `evaluator.evaluate`|
-| Durable per-source trajectories          | `store.Store` (SQLite, WAL mode)                |
-| Positive-only rubric, weights ≤ 7        | enforced in `challenger.parse_response` / harness |
-| "ALL rounds attempted" persisted         | rounds row materialized on first parse, updated in-place |
-| Meta-opt population + Boltzmann (T=0.1)  | `metaopt.boltzmann_select`                      |
-| Failure trajectory analysis              | `metaopt.aggregate_failures_from_db` (SQL)      |
-| Code-editing agent ⇒ harness mutation    | `metaopt.Mutator` + `metaopt.apply_mutation`    |
-| Train+val gate, accept only if val ↑     | `metaopt.MetaOptimizer.run` decision block      |
-
-The defaults in `AcceptanceConfig` mirror the paper §3: weak avg ≤ 0.65,
-weak max ≤ 0.75, strong avg ∈ [0.60, 0.95), gap ≥ 0.20. All are
-overridable per run.
-
-The paper's meta-optimization loop (evolving the orchestrator's prompts
-themselves) is implemented in `autodata/metaopt.py` — see
-_Meta-optimization_ below.
-
----
-
-## Architecture
-
-The runtime is an **event-sourced pipeline** over a SQLite store. Pure
-`step()` advances item state; the dispatcher fulfills LLM requests and
-commits responses; the store is the durable record of the run.
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  Pipeline  — pure (state, responses) → (state, requests)     │
-│  No I/O. No threads. No network.                             │
-├──────────────────────────────────────────────────────────────┤
-│  Dispatcher — reads ready items, calls step(), fulfills      │
-│  requests, writes results. Two strategies:                   │
-│    • fulfill_local   (threadpool over HTTP)                  │
-│    • fulfill_batch   (provider batch APIs)                   │
-├──────────────────────────────────────────────────────────────┤
-│  Store — SQLite (WAL). One run.db per run. Resumable.        │
-│  Tables: runs, items, rounds, requests, responses,           │
-│          solver_scores, accepted.                            │
-├──────────────────────────────────────────────────────────────┤
-│  LLMClient — provider routing, RPM rate limit, retry, cost.  │
-└──────────────────────────────────────────────────────────────┘
-```
-
-**States (5 + 2 terminal):**
-`PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES`
-plus `NEED_REFLECTION` on the rejection branch and `ACCEPTED` / `REJECTED`
-as terminals. `NEED_SCORES` fans out `N × weak + N × strong` solver
-requests concurrently; each judge fires as soon as its solver lands. The
-dispatcher is bounded by `cfg.dispatcher.concurrency`.
-
-**Legacy flow (deprecated, kept here for completeness):**
-
-```
-GroundingItem  ─▶  Challenger ─▶  Candidate
-                      ▲              │
-                      │              ▼
-                Reflector          Quality
-                      ▲              │ (pass)
-                      │              ▼
-                      │       WeakSolver × N   StrongSolver × N
-                      │              │              │
-                      │              ▼              ▼
-                      │           Judge per attempt
-                      │                   │
-                      │                   ▼
-                      └───── evaluator.evaluate ──▶ accept? ──▶ DatasetWriter
-                                          │ no
-                                          ▼
-                                  (next round, with feedback)
-```
-
-Per source item the loop runs until accepted or `loop.max_rounds`
-is exhausted. Every round — accepted or rejected — is written to
-`trajectories/<source_id>.json`.
-
----
+> **Status:** alpha (0.1.0). The API is still moving. Pin a commit if you're depending on it.
 
 ## Install
 
-This project uses [`uv`](https://docs.astral.sh/uv/) for environment and
-dependency management.
-
 ```bash
-uv venv                          # create .venv
-uv pip install -e .              # install the package
-uv pip install -e ".[dev]"       # + tests / linters
-uv pip install -e ".[hf]"        # + optional Hugging Face export
+uv venv
+uv pip install -e .             # core
+uv pip install -e ".[dev]"      # + pytest, ruff
+uv pip install -e ".[hf]"       # + Hugging Face export
 ```
 
-Activate the venv with `source .venv/bin/activate`, or prefix commands
-with `uv run` (e.g. `uv run pytest`, `uv run autodata run …`).
+Python 3.10+. Either activate the venv (`source .venv/bin/activate`) or prefix commands with `uv run`.
 
-Python ≥ 3.10.
-
----
-
-## Mock demo (no API keys)
+## Quick start (no API keys)
 
 ```bash
 uv run autodata run --config configs/mock_demo.yaml
 uv run autodata status outputs/mock-demo
-uv run autodata inspect-run outputs/mock-demo            # all items
-uv run autodata inspect-run outputs/mock-demo --stuck    # only non-terminal items
 uv run autodata export --run outputs/mock-demo --format jsonl
 ```
 
-The mock demo uses the in-process mock provider. The full loop runs in
-~1 second and writes a single `run.db` (plus `config.snapshot.yaml`) under
-`outputs/mock-demo/`. `autodata export` produces the legacy JSONL on
-demand; `inspect-run` queries the database for a per-item state table.
+The mock demo uses an in-process scripted "provider" and finishes in about a second. It writes `outputs/mock-demo/run.db` plus a frozen config snapshot. The `export` step is opt-in — the SQLite database is the source of truth.
 
-**Resume any run:**
+## Real providers
 
-```bash
-uv run autodata resume outputs/mock-demo
-# or:
-uv run autodata run --config configs/mock_demo.yaml --resume mock-demo
-```
-
-Kill the process mid-run (Ctrl-C); the state machine + SQLite ensure the
-restart picks up exactly where it left off. In-flight local requests are
-reverted to pending; in-flight batch requests are kept tagged and polled.
-
----
-
-## API keys & real providers
-
-`autodata` dispatches real LLM calls through [LiteLLM][litellm], so any
-provider it supports works. Set the relevant env var(s):
+LLM calls go through [LiteLLM][litellm], so any provider it supports should work. Set the relevant key and reference the model in YAML:
 
 ```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-export TOGETHER_API_KEY=...
-export FIREWORKS_API_KEY=...
-export OPENROUTER_API_KEY=...
-# Ollama / local vLLM: no key needed
+export OPENAI_API_KEY=...
+export ANTHROPIC_API_KEY=...
 ```
-
-Then reference a model in your YAML config:
 
 ```yaml
 challenger:    { provider_model: anthropic/claude-haiku-4-5, temperature: 0.8 }
@@ -170,169 +45,126 @@ strong_solver: { provider_model: openai/gpt-4o }
 judge:         { provider_model: anthropic/claude-haiku-4-5, temperature: 0.0 }
 ```
 
-You can mix providers freely across roles. Use cheap models for the
-weak solver and a frontier model for the strong solver to maximize the
-expected weak-vs-strong gap.
+You can mix providers across roles. The cheaper-vs-frontier split between the two solvers is the whole point — that's what produces the weak/strong gap that drives acceptance.
+
+`${VAR}` and `${VAR:default}` substitution works in any string field, so `api_base: ${OLLAMA_HOST:http://localhost:11434}` does what you'd expect.
+
+See `configs/example_qa.yaml` and `configs/example_math.yaml` for full real-provider configs.
 
 [litellm]: https://docs.litellm.ai/
 
-`${VAR}` and `${VAR:default}` interpolation works inside any string config
-field — e.g. `api_base: ${OLLAMA_HOST:http://localhost:11434}`.
+## How it works
 
----
+For each source item, autodata runs the same five-step loop until the candidate is accepted or `loop.max_rounds` is exhausted:
 
-## Creating a new domain
+1. **Challenger** proposes a candidate `(input, reference_output, rubric)`.
+2. **Quality** audits the candidate for obvious problems.
+3. **Weak** and **strong** solvers each take N attempts at the input.
+4. **Judge** scores every attempt against the rubric.
+5. **Evaluator** decides accept / reject. If reject, **reflector** writes feedback for the next round.
 
-A domain plugin is one Python class subclassing `DomainAdapter`. Six
-abstract methods, no core changes required.
+The acceptance defaults come from §3 of the paper:
 
-```bash
-uv run autodata init-domain customer_support_tickets -o my_domain.py
+- weak average ≤ 0.65, weak max ≤ 0.75
+- strong average in [0.60, 0.95)
+- strong − weak gap ≥ 0.20
+- quality must have passed
+
+All of these are overridable in `acceptance:` in your config.
+
+## Architecture
+
+The runtime is an event-sourced pipeline over a SQLite database. A pure `step()` function advances item state; the dispatcher fulfills LLM requests and writes responses back; the store is the durable record.
+
+```
+pipeline.step()        pure state machine: (state, responses) -> (state, requests)
+dispatcher             reads ready items, calls step(), fulfills requests
+  ├─ fulfill_local     threadpool over HTTP
+  └─ fulfill_batch     provider batch APIs (see "Batch" below)
+store                  SQLite + WAL, one run.db per run
+llm                    provider routing, rate-limit, retry, cost accounting
 ```
 
-Then fill in the methods (`load_grounding`, `generation_prompt`,
-`validate_candidate`, `solver_prompt`, `quality_prompt`, `judge_prompt`)
-and reference it in your config:
+Item states: `PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES` with `NEED_REFLECTION` on the reject branch and `ACCEPTED` / `REJECTED` as terminals. `NEED_SCORES` fans out `N × weak + N × strong` solver requests in parallel; each judge fires the moment its solver lands. Concurrency is bounded by `cfg.dispatcher.concurrency`.
 
-```yaml
-domain:
-  path: ./my_domain.py:CustomerSupportTickets
-  params:
-    source_csv: ./tickets.csv
-```
-
-Bundled examples: `domains/qa_from_documents.py`,
-`domains/math_word_problems.py`, `examples/new_domain_template.py`.
-
----
+The fact that `step()` is pure is the only reason resume works. Kill the process at any point — including mid-batch — and `autodata resume` picks up exactly where it left off. In-flight local requests revert to pending; in-flight batch requests stay tagged and get polled.
 
 ## CLI
 
 ```
-uv run autodata run --config CONFIG.yaml [--run-id ID] [--resume RUN_ID] [--verbose]
-uv run autodata resume outputs/RUN_DIR
-uv run autodata status outputs/RUN_DIR
-uv run autodata inspect-run outputs/RUN_DIR [--stuck]
-uv run autodata export --run outputs/RUN_DIR --format jsonl|hf [--out PATH]
-uv run autodata metaopt --config CONFIG.yaml
-uv run autodata init-domain NAME --out my_domain.py
+autodata run --config CONFIG.yaml [--run-id ID] [--resume RUN_ID] [-v]
+autodata resume RUN_DIR
+autodata status RUN_DIR
+autodata inspect-run RUN_DIR [--stuck]
+autodata export --run RUN_DIR --format jsonl|hf [--out PATH]
+autodata metaopt --config CONFIG.yaml
+autodata init-domain NAME --out my_domain.py
 ```
 
----
+`status` is the one-liner; `inspect-run` is the detailed per-item table. `--stuck` filters to items that haven't reached a terminal state, which is what you want when something looks wrong.
 
-## Outputs
+## Run outputs
 
-Each run writes to `outputs/<run_id>/`:
+Everything for a run lives under `outputs/<run_id>/`:
 
-| File                                  | Contents                                  |
-| ---                                   | ---                                       |
-| `run.db`                              | Authoritative SQLite database for the run. |
-| `config.snapshot.yaml`                | Frozen config used for this run.          |
-| `accepted.jsonl` *(on export)*        | Accepted dataset — produced by `autodata export`. |
-| `hf_export/` *(on export)*            | Optional Hugging Face datasets directory. |
+- `run.db` — SQLite. Tables: `runs`, `items`, `rounds`, `requests`, `responses`, `solver_scores`, `accepted`. Queryable with the `sqlite3` CLI and safe to share.
+- `config.snapshot.yaml` — the exact config used. Resume reads this if you don't pass `--config`.
+- `accepted.jsonl` / `hf_export/` — produced on `autodata export`, not written automatically.
 
-The `run.db` is the durable record. Tables: `runs`, `items`, `rounds`,
-`requests`, `responses`, `solver_scores`, `accepted`. The DB is queryable
-directly with `sqlite3` (e.g. "which items are stuck in NEED_SCORES?")
-and self-contained for sharing.
+Each accepted record contains `input`, `reference_output`, `rubric`, `domain`, `source_id`, `metadata`, the weak/strong/gap scores, per-attempt solver scores, and the acceptance rationale.
 
-Each accepted record carries: `input`, `reference_output`, `rubric`,
-`domain`, `source_id`, `metadata`, `weak_avg`, `strong_avg`, `gap`,
-per-attempt solver scores, and `acceptance_rationale`.
+## Writing a domain
 
-**Resume is durable at response granularity.** Killing a run between
-LLM calls — even mid-batch — never loses progress. See
-`store.normalize_for_resume` for the exact reconciliation table.
+A domain plugin is one class subclassing `DomainAdapter` with six methods. Scaffold one with:
 
----
+```bash
+uv run autodata init-domain customer_support -o my_domain.py
+```
 
-## Safety & quality guardrails
+Fill in `load_grounding`, `generation_prompt`, `validate_candidate`, `solver_prompt`, `quality_prompt`, and `judge_prompt`, then point your config at it:
 
-- **No silent acceptance.** Every accepted datapoint has an
-  `acceptance_rationale` and a recorded `EvalReport` (the paper's
-  trajectory contract).
-- **No hardcoded domain assumptions.** Every domain-specific piece is in
-  the `DomainAdapter`.
-- **Deterministic IDs.** `stable_id(...)` produces reproducible
-  `candidate_id`/`source_id`/`trajectory_id` — runs are resumable.
-- **Budget controls.** `request_budget_usd` is a soft advisory hook;
-  hard rate-limit/retry/timeout behavior is centralized in `LLMClient`.
-- **Optional safety filter.** `safety.enabled: true` runs a conservative
-  PII heuristic by default; plug in `module:attr` for your own DLP.
-- **Anti-gaming.** Solvers are not adversarially told to be "weak" or
-  "strong" — the role differential comes from model / temperature
-  choice. The paper specifically warns this is a gaming vector.
+```yaml
+domain:
+  path: ./my_domain.py:CustomerSupport
+  params:
+    source_csv: ./tickets.csv
+```
 
----
+The two bundled domains (`src/autodata/domains/qa_from_documents.py`, `src/autodata/domains/math_word_problems.py`) are short and worth reading before you write your own.
 
 ## Meta-optimization
 
-`autodata metaopt --config CONFIG.yaml` runs the paper's secondary loop:
-evolve the orchestrator's instructions themselves. The unit of evolution
-is a `HarnessSpec` — a structured set of rule strings injected into each
-agent's system prompt (`challenger_rules`, `quality_rules`, …) plus a
-few numeric knobs (`rubric_max_weight`, `require_self_test`).
+`autodata metaopt --config CONFIG.yaml` runs the paper's secondary loop: evolve the orchestrator's *prompts* over generations. The unit of evolution is a `HarnessSpec` — a structured bag of rule strings that get injected into each agent's system prompt, plus a couple of numeric knobs.
 
-The loop:
+The loop, roughly:
 
-1. Evaluate the seed harness on both training and validation source items.
-2. For each iteration:
-   - Pick a parent from the population via **Boltzmann sampling** at
-     `temperature = 0.1` over training scores.
-   - Aggregate the rejection-reason histogram from the parent's last
-     training run.
-   - Send the parent + failure summary to the **mutator** LLM, which
-     returns a structured `{rules_add, rules_remove_indices,
-     rubric_max_weight, require_self_test}` diff.
-   - Apply the mutation → child `HarnessSpec`. Duplicates (same
-     fingerprint) are detected and skipped.
-   - Evaluate child on training items. If it doesn't improve, reject.
-   - Otherwise evaluate on validation items. Accept the mutation only
-     if `child.val > parent.val` — same gate as the paper.
+1. Score the seed harness on training and validation source items.
+2. Each iteration: Boltzmann-sample a parent from the population (T=0.1 over training scores), summarize that parent's most recent rejection reasons, ask the mutator LLM for a structured diff, apply it, dedupe, and re-evaluate.
+3. Accept the mutation only if `child.val > parent.val` — the paper's gate.
 
-Mutations operate on `HarnessSpec`, not on Python source. This preserves
-the expressive scope for prompt-text edits (the paper's main lever) while
-avoiding the safety / sandboxing surface of a real code-editing agent.
-This is called out explicitly so users can swap in their own mutator if
-they want richer edits.
+Mutations operate on the harness, not on Python source. That preserves the main lever the paper exercises (prompt-text edits) without the sandboxing headache of a code-editing agent. Swap in your own mutator if you want richer edits.
 
-**Demo** (no API keys):
+Try it without keys:
 
 ```bash
-autodata metaopt --config configs/metaopt_mock.yaml
+uv run autodata metaopt --config configs/metaopt_mock.yaml
 ```
 
-The mock-friendly scenario seeds at 0% accept rate; the mutator proposes
-a source-specificity rule on iteration 1; the rule lifts train and val
-to 100%; the mutation is accepted; subsequent iterations re-propose the
-same rule and are rejected (no-op detection). Population, lineage, and
-per-iteration decisions are written under
-`outputs/metaopt/<run_id>/iterations/iter_NNN/`.
+The mock scenario seeds at 0% accept, the mutator proposes a source-specificity rule on iteration 1 that lifts both train and val to 100%, that mutation is accepted, and subsequent iterations get deduplicated. Population, lineage, and per-iteration decisions are written under `outputs/metaopt/<run_id>/iterations/`.
 
-**Real run.** Add `metaopt: { enabled: true, max_iterations: 50, ... }`
-to your existing YAML config and point `metaopt.mutator` at a strong
-reasoning model. The loop reuses your `domain`, `acceptance`, `loop`,
-and agent model settings — meta-opt is layered on top of the normal
-run, not a separate codepath.
+To run for real, add `metaopt: { enabled: true, max_iterations: 50, ... }` to your existing config and point `metaopt.mutator` at a strong reasoning model. Meta-opt reuses your existing `domain`, `acceptance`, `loop`, and agent settings.
 
----
+## Batch mode
 
-## Limitations
+The dispatcher can submit requests through provider batch APIs (OpenAI `/v1/batches`, Anthropic message batches) for the 50% cost discount. The `BatchProvider` protocol and a `MockBatchProvider` are in the box. Real provider implementations are not — wiring those up is the next piece of work. If you only have a few thousand requests, `fulfill_local` is fine.
 
-- LLM-as-judge inherits the usual biases of LLM-as-judge. The rubric
-  cap at weight ≤ 7 and the positive-only rule (paper §meta-opt) reduce
-  but do not eliminate this.
-- The PII filter is a starting heuristic. Production use needs a real
-  DLP integration via the `safety.filter` hook.
-- Diversity / near-duplicate checks across accepted examples are not
-  yet included — extend `store.insert_accepted` to add MinHash /
-  embedding-based dedupe.
-- Real provider batch implementations (OpenAI `/v1/batches`, Anthropic
-  message batches) are not bundled. The `dispatcher_batch.BatchProvider`
-  protocol is in place; the `MockBatchProvider` exercises submit / poll /
-  fetch. Plug in a real provider when you need the 50% cost discount.
+## Safety and quality notes
 
----
+- Every accepted datapoint carries an `acceptance_rationale` and a serialized `EvalReport`. There is no silent acceptance path.
+- The built-in PII filter (`safety.enabled: true`) is a conservative heuristic, not a real DLP. For anything regulated, plug your own module in via `safety.filter`.
+- Solvers are never *told* they're the weak or strong solver — the differential comes from the model/temperature choice. The paper flags adversarial prompting here as a gaming vector, so don't.
+- There is no diversity / near-duplicate check on accepted examples yet. If you need that, extend `store.insert_accepted` with MinHash or embedding-based dedupe.
+- LLM-as-judge bias is what it is. The rubric weight cap (≤ 7) and the positive-only rule from the paper help, but don't pretend they eliminate it.
 
 ## Tests
 
@@ -340,22 +172,12 @@ run, not a separate codepath.
 uv run pytest
 ```
 
-131 tests, all running against the in-process mock provider. No API keys
-required. Coverage:
+The full suite (~130 tests) runs against the in-process mock provider — no keys, no network. The interesting bits to look at if you're touching the core:
 
-- schema validation and round-trip
-- LLMClient: token-bucket math, glob-pattern rate limits, retry,
-  cost accounting, mock dispatch
-- Store: SQLite schema, `claim_pending` atomicity under threads, round
-  materialization lifecycle, resume normalization (§4.2 table),
-  JSONL export
-- Pipeline: exhaustive state-transition tests on the pure `step()`
-  function — including the §2.3 partial-completion noop invariant
-- Agent builders/parsers
-- Dispatcher: end-to-end accept, concurrent fulfill (100 requests, no
-  duplicate responses), budget abort, resume after kill, unrecoverable
-  failure cap
-- Batch dispatcher: submit / poll / fetch / batch_id tagging
-- Acceptance criteria branches
-- Meta-optimization: Boltzmann selection, mutation application, full
-  loop with accepted improving mutation
+- `test_pure_pipeline.py` — exhaustive state-transition coverage of `step()`, including the partial-completion no-op invariant.
+- `test_store.py` — `claim_pending` atomicity under threads, resume normalization.
+- `test_dispatcher.py` — end-to-end accept, 100-request concurrent fulfill, budget abort, kill/resume.
+
+## License
+
+Apache-2.0. See `LICENSE`.
