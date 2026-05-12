@@ -20,18 +20,14 @@ domain-specific component is a pluggable `DomainAdapter`.
 
 | Paper concept                            | This repo                                       |
 | ---                                      | ---                                             |
-| Main / orchestrator agent                | `orchestrator.Orchestrator`                     |
-| Challenger LLM                           | `agents.challenger.ChallengerAgent`             |
-| Weak solver / strong solver              | `agents.solver.SolverAgent("weak"/"strong")`    |
-| Quality verifier                         | `agents.verifier.VerifierJudge.quality_check`   |
-| Judge with weighted rubric               | `agents.verifier.VerifierJudge.score`           |
-| Reflection / targeted feedback           | `agents.reflector.Reflector`                    |
+| Generate→verify→evaluate→reflect→refine  | `pipeline.step()` (pure state machine)          |
+| Challenger / quality / weak / strong / judge / reflector | `agents/*.py` builders + parsers |
 | Acceptance criteria (weak/strong/gap)    | `config.AcceptanceConfig` + `evaluator.evaluate`|
-| Per-source trajectories with all rounds  | `writer.RunWriter` + `schemas.Trajectory`       |
-| Positive-only rubric, weights ≤ 7        | enforced in `ChallengerAgent._parse` / harness  |
-| "ALL rounds attempted" persisted         | trajectory rewritten after every round          |
+| Durable per-source trajectories          | `store.Store` (SQLite, WAL mode)                |
+| Positive-only rubric, weights ≤ 7        | enforced in `challenger.parse_response` / harness |
+| "ALL rounds attempted" persisted         | rounds row materialized on first parse, updated in-place |
 | Meta-opt population + Boltzmann (T=0.1)  | `metaopt.boltzmann_select`                      |
-| Failure trajectory analysis              | `metaopt.aggregate_failures`                    |
+| Failure trajectory analysis              | `metaopt.aggregate_failures_from_db` (SQL)      |
 | Code-editing agent ⇒ harness mutation    | `metaopt.Mutator` + `metaopt.apply_mutation`    |
 | Train+val gate, accept only if val ↑     | `metaopt.MetaOptimizer.run` decision block      |
 
@@ -47,17 +43,48 @@ _Meta-optimization_ below.
 
 ## Architecture
 
+The runtime is an **event-sourced pipeline** over a SQLite store. Pure
+`step()` advances item state; the dispatcher fulfills LLM requests and
+commits responses; the store is the durable record of the run.
+
 ```
-GroundingItem  ─▶  ChallengerAgent ─▶  Candidate
-                      ▲                   │
-                      │                   ▼
-                Reflector            VerifierJudge.quality_check
-                      ▲                   │ (pass)
-                      │                   ▼
-                      │            WeakSolver × N   StrongSolver × N
-                      │                   │              │
-                      │                   ▼              ▼
-                      │            VerifierJudge.score per attempt
+┌──────────────────────────────────────────────────────────────┐
+│  Pipeline  — pure (state, responses) → (state, requests)     │
+│  No I/O. No threads. No network.                             │
+├──────────────────────────────────────────────────────────────┤
+│  Dispatcher — reads ready items, calls step(), fulfills      │
+│  requests, writes results. Two strategies:                   │
+│    • fulfill_local   (threadpool over HTTP)                  │
+│    • fulfill_batch   (provider batch APIs)                   │
+├──────────────────────────────────────────────────────────────┤
+│  Store — SQLite (WAL). One run.db per run. Resumable.        │
+│  Tables: runs, items, rounds, requests, responses,           │
+│          solver_scores, accepted.                            │
+├──────────────────────────────────────────────────────────────┤
+│  LLMClient — provider routing, RPM rate limit, retry, cost.  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**States (5 + 2 terminal):**
+`PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES`
+plus `NEED_REFLECTION` on the rejection branch and `ACCEPTED` / `REJECTED`
+as terminals. `NEED_SCORES` fans out `N × weak + N × strong` solver
+requests concurrently; each judge fires as soon as its solver lands. The
+dispatcher is bounded by `cfg.dispatcher.concurrency`.
+
+**Legacy flow (deprecated, kept here for completeness):**
+
+```
+GroundingItem  ─▶  Challenger ─▶  Candidate
+                      ▲              │
+                      │              ▼
+                Reflector          Quality
+                      ▲              │ (pass)
+                      │              ▼
+                      │       WeakSolver × N   StrongSolver × N
+                      │              │              │
+                      │              ▼              ▼
+                      │           Judge per attempt
                       │                   │
                       │                   ▼
                       └───── evaluator.evaluate ──▶ accept? ──▶ DatasetWriter
@@ -95,12 +122,28 @@ Python ≥ 3.10.
 
 ```bash
 uv run autodata run --config configs/mock_demo.yaml
-uv run autodata inspect-run outputs/mock-demo
+uv run autodata status outputs/mock-demo
+uv run autodata inspect-run outputs/mock-demo            # all items
+uv run autodata inspect-run outputs/mock-demo --stuck    # only non-terminal items
+uv run autodata export --run outputs/mock-demo --format jsonl
 ```
 
-The mock demo uses the in-process `MockLLMProvider`. The full loop runs
-in ~1 second and writes a real `accepted.jsonl`, `summary.json`, and
-trajectory files so you can inspect the pipeline end-to-end.
+The mock demo uses the in-process mock provider. The full loop runs in
+~1 second and writes a single `run.db` (plus `config.snapshot.yaml`) under
+`outputs/mock-demo/`. `autodata export` produces the legacy JSONL on
+demand; `inspect-run` queries the database for a per-item state table.
+
+**Resume any run:**
+
+```bash
+uv run autodata resume outputs/mock-demo
+# or:
+uv run autodata run --config configs/mock_demo.yaml --resume mock-demo
+```
+
+Kill the process mid-run (Ctrl-C); the state machine + SQLite ensure the
+restart picks up exactly where it left off. In-flight local requests are
+reverted to pending; in-flight batch requests are kept tagged and polled.
 
 ---
 
@@ -166,10 +209,13 @@ Bundled examples: `domains/qa_from_documents.py`,
 ## CLI
 
 ```
-uv run autodata run --config CONFIG.yaml [--run-id ID] [--verbose]
+uv run autodata run --config CONFIG.yaml [--run-id ID] [--resume RUN_ID] [--verbose]
+uv run autodata resume outputs/RUN_DIR
+uv run autodata status outputs/RUN_DIR
+uv run autodata inspect-run outputs/RUN_DIR [--stuck]
+uv run autodata export --run outputs/RUN_DIR --format jsonl|hf [--out PATH]
+uv run autodata metaopt --config CONFIG.yaml
 uv run autodata init-domain NAME --out my_domain.py
-uv run autodata inspect-run outputs/RUN_ID
-uv run autodata export --run outputs/RUN_ID --format jsonl|hf
 ```
 
 ---
@@ -180,19 +226,23 @@ Each run writes to `outputs/<run_id>/`:
 
 | File                                  | Contents                                  |
 | ---                                   | ---                                       |
-| `config.snapshot.yaml`                | The frozen config used for this run.      |
-| `accepted.jsonl`                      | Accepted datapoints — final dataset.      |
-| `rejected.jsonl`                      | Source items exhausted without accept.    |
-| `trajectories/<source_id>.json`       | All rounds (accepted **and** rejected) per source. |
-| `summary.json`                        | Live counters; updated each acceptance/rejection. |
-| `hf_export/`                          | Optional Hugging Face `datasets` directory. |
+| `run.db`                              | Authoritative SQLite database for the run. |
+| `config.snapshot.yaml`                | Frozen config used for this run.          |
+| `accepted.jsonl` *(on export)*        | Accepted dataset — produced by `autodata export`. |
+| `hf_export/` *(on export)*            | Optional Hugging Face datasets directory. |
+
+The `run.db` is the durable record. Tables: `runs`, `items`, `rounds`,
+`requests`, `responses`, `solver_scores`, `accepted`. The DB is queryable
+directly with `sqlite3` (e.g. "which items are stuck in NEED_SCORES?")
+and self-contained for sharing.
 
 Each accepted record carries: `input`, `reference_output`, `rubric`,
 `domain`, `source_id`, `metadata`, `weak_avg`, `strong_avg`, `gap`,
-per-attempt solver scores, `acceptance_rationale`, and `trajectory_id`.
+per-attempt solver scores, and `acceptance_rationale`.
 
-Trajectories are written incrementally after **every** round, so an
-interrupted run can be resumed (`resume: true`, default).
+**Resume is durable at response granularity.** Killing a run between
+LLM calls — even mid-batch — never loses progress. See
+`store.normalize_for_resume` for the exact reconciliation table.
 
 ---
 
@@ -275,12 +325,12 @@ run, not a separate codepath.
 - The PII filter is a starting heuristic. Production use needs a real
   DLP integration via the `safety.filter` hook.
 - Diversity / near-duplicate checks across accepted examples are not
-  yet included — extend `RunWriter.write_accepted` to add MinHash /
+  yet included — extend `store.insert_accepted` to add MinHash /
   embedding-based dedupe.
-- Concurrency is currently sequential per source item. The orchestrator
-  reads `max_concurrency` but does not yet parallelize; the
-  per-source-item structure makes this an easy follow-on with
-  `ThreadPoolExecutor`.
+- Real provider batch implementations (OpenAI `/v1/batches`, Anthropic
+  message batches) are not bundled. The `dispatcher_batch.BatchProvider`
+  protocol is in place; the `MockBatchProvider` exercises submit / poll /
+  fetch. Plug in a real provider when you need the 50% cost discount.
 
 ---
 
@@ -290,14 +340,22 @@ run, not a separate codepath.
 uv run pytest
 ```
 
-Tests run entirely against the `MockLLMProvider`, so no API keys are
-needed. Covered:
+131 tests, all running against the in-process mock provider. No API keys
+required. Coverage:
 
 - schema validation and round-trip
-- mock LLM provider
-- every acceptance-criterion branch
-- registered + path-based domain loading
-- a full mocked accept loop
-- a full mocked reject-and-exhaust loop
-- trajectory + config-snapshot writing
-- resume behavior
+- LLMClient: token-bucket math, glob-pattern rate limits, retry,
+  cost accounting, mock dispatch
+- Store: SQLite schema, `claim_pending` atomicity under threads, round
+  materialization lifecycle, resume normalization (§4.2 table),
+  JSONL export
+- Pipeline: exhaustive state-transition tests on the pure `step()`
+  function — including the §2.3 partial-completion noop invariant
+- Agent builders/parsers
+- Dispatcher: end-to-end accept, concurrent fulfill (100 requests, no
+  duplicate responses), budget abort, resume after kill, unrecoverable
+  failure cap
+- Batch dispatcher: submit / poll / fetch / batch_id tagging
+- Acceptance criteria branches
+- Meta-optimization: Boltzmann selection, mutation application, full
+  loop with accepted improving mutation
