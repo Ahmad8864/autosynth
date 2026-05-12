@@ -54,6 +54,9 @@ autodata = "autodata.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"autodata" = ["templates/*.tmpl"]
+
 [tool.setuptools.dynamic]
 version = { attr = "autodata.__version__" }
 

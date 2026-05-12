@@ -13,7 +13,9 @@ Commands:
 from __future__ import annotations
 
 import sys
+from importlib.resources import files
 from pathlib import Path
+from string import Template
 
 import typer
 import yaml
@@ -122,7 +124,7 @@ def init_domain_cmd(
     if out.exists():
         console.print(f"[red]refusing to overwrite[/red] {out}")
         raise typer.Exit(1)
-    out.write_text(_DOMAIN_TEMPLATE.format(name=name, cls=_camel(name)))
+    out.write_text(_render_domain_template(name=name, cls=_camel(name)))
     console.print(f"[green]wrote[/green] {out}")
     console.print(f"Use it via:\n  domain:\n    path: {out}:{_camel(name)}")
 
@@ -227,45 +229,10 @@ def _camel(s: str) -> str:
     return "".join(p.capitalize() for p in s.replace("-", "_").split("_"))
 
 
-_DOMAIN_TEMPLATE = '''"""Custom domain: {name}."""
-from __future__ import annotations
-
-import json
-from typing import Any, Iterable
-
-from autodata.domain import DomainAdapter, GroundingItem, register_domain
-from autodata.schemas import Candidate
-
-
-@register_domain("{name}")
-class {cls}(DomainAdapter):
-    description = "TODO: describe the dataset you are constructing."
-
-    def __init__(self, **params: Any):
-        super().__init__(**params)
-        # Read any config-driven params from self.params here.
-
-    def load_grounding(self) -> Iterable[GroundingItem]:
-        # TODO: yield GroundingItem(source_id=..., body=..., metadata={{}})
-        raise NotImplementedError
-
-    def generation_prompt(self, item, feedback, round_n, prior_payloads):
-        sys_msg = "ROLE:CHALLENGER. ... return JSON with payload, reference_output, rubric."
-        usr_msg = f"ROUND={{round_n}}\\nSOURCE: {{item.body}}\\nFEEDBACK: {{feedback}}"
-        return [{{"role": "system", "content": sys_msg}}, {{"role": "user", "content": usr_msg}}]
-
-    def validate_candidate(self, candidate: Candidate) -> list[str]:
-        return []  # return non-empty list to reject
-
-    def solver_prompt(self, candidate: Candidate, solver_role: str):
-        return [{{"role": "user", "content": json.dumps(candidate.payload)}}]
-
-    def quality_prompt(self, candidate: Candidate):
-        return [{{"role": "user", "content": "ROLE:QUALITY. Audit candidate; return JSON {{passed,failures,notes}}"}}]
-
-    def judge_prompt(self, candidate: Candidate, solver_response: str, solver_role: str):
-        return [{{"role": "user", "content": f"ROLE:JUDGE. Score against rubric. solver={{solver_role}} resp={{solver_response}}"}}]
-'''
+def _render_domain_template(*, name: str, cls: str) -> str:
+    """Load the packaged scaffold and substitute the domain name + class name."""
+    src = files("autodata.templates").joinpath("new_domain.py.tmpl").read_text(encoding="utf-8")
+    return Template(src).substitute(NAME=name, CLASS=cls)
 
 
 if __name__ == "__main__":
