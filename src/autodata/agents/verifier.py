@@ -1,18 +1,12 @@
-"""Verifier/Judge — runs both the quality audit and the rubric scoring.
-
-Also exposes module-level ``build_*_request`` / ``parse_*`` helpers consumed
-by the event-sourced pipeline. The legacy ``VerifierJudge`` class is kept
-for the existing Orchestrator path until the cutover commit.
+"""Verifier/Judge — module-level ``build_*_request`` / ``parse_*`` helpers
+for the event-sourced pipeline.
 """
 
 from __future__ import annotations
 
-from loguru import logger
-
 from autodata.domain import DomainAdapter
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness
 from autodata.llm import LLMRequest
-from autodata.models import LLMClient
 from autodata.schemas import Candidate, QualityCheck, SolverScore
 from autodata.utils import clamp, extract_json, stable_id
 
@@ -130,68 +124,6 @@ def parse_judge(
         per_criterion=per,
         failure_modes=[str(x) for x in (data.get("failure_modes") or [])],
     )
-
-
-class VerifierJudge:
-    def __init__(self, client: LLMClient, domain: DomainAdapter, harness: HarnessSpec | None = None):
-        self.client = client
-        self.domain = domain
-        self.harness = harness or DEFAULT_HARNESS
-
-    def quality_check(self, candidate: Candidate) -> QualityCheck:
-        messages = self.domain.quality_prompt(candidate)
-        messages = apply_harness(messages, self.harness.rules_for("quality"))
-        try:
-            data = self.client.complete_json(messages)
-        except Exception as e:
-            logger.warning("quality check parse failure: {}", e)
-            return QualityCheck(passed=False, failures=[f"quality_judge_parse_error:{e}"])
-        return QualityCheck(
-            passed=bool(data.get("passed", False)),
-            failures=[str(x) for x in (data.get("failures") or [])],
-            notes=data.get("notes"),
-        )
-
-    def score(
-        self, candidate: Candidate, solver_response: str, solver_role: str, attempt: int
-    ) -> SolverScore:
-        messages = self.domain.judge_prompt(candidate, solver_response, solver_role)
-        messages = apply_harness(messages, self.harness.rules_for("judge"))
-        try:
-            data = self.client.complete_json(messages)
-        except Exception as e:
-            logger.warning("judge parse failure: {}", e)
-            return SolverScore(
-                solver=solver_role,
-                attempt=attempt,
-                raw_response=solver_response,
-                total=0.0,
-                failure_modes=[f"judge_parse_error:{e}"],
-            )
-
-        per: dict[str, float] = {}
-        for k, v in (data.get("per_criterion") or {}).items():
-            try:
-                per[str(k)] = clamp(float(v))
-            except (TypeError, ValueError):
-                continue
-
-        if "total" in data:
-            try:
-                total = clamp(float(data["total"]))
-            except (TypeError, ValueError):
-                total = _weighted_average(per, candidate)
-        else:
-            total = _weighted_average(per, candidate)
-
-        return SolverScore(
-            solver=solver_role,
-            attempt=attempt,
-            raw_response=solver_response,
-            total=total,
-            per_criterion=per,
-            failure_modes=[str(x) for x in (data.get("failure_modes") or [])],
-        )
 
 
 def _weighted_average(per: dict[str, float], candidate: Candidate) -> float:

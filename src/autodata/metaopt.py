@@ -17,7 +17,6 @@ import copy
 import json
 import math
 import random
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +27,10 @@ from pydantic import BaseModel, Field
 from autodata.config import RunConfig
 from autodata.domain import build_domain
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec, make_harness
-from autodata.models import LLMClient
-from autodata.orchestrator import Orchestrator
-from autodata.schemas import Trajectory
-from autodata.utils import make_run_id, write_json, write_pydantic
+from autodata.llm import LLMClient, LLMConfig, LLMRequest
+from autodata.runner import Runner
+from autodata.store import Store
+from autodata.utils import make_run_id, stable_id, write_json, write_pydantic
 
 # ---------------------------------------------------------------------------
 # Population / record types
@@ -86,65 +85,6 @@ def boltzmann_select(records: list[HarnessRecord], temperature: float, rng: rand
 
 
 # ---------------------------------------------------------------------------
-# Failure aggregation from prior eval trajectories
-# ---------------------------------------------------------------------------
-
-
-def aggregate_failures(traj_paths: Iterable[Path], sample_size: int = 3) -> dict[str, Any]:
-    """Summarize rejection reasons + sample payloads across one eval run."""
-    reason_counts: dict[str, int] = {}
-    samples: list[dict[str, Any]] = []
-    total_rounds = 0
-    rejected_rounds = 0
-
-    for p in traj_paths:
-        try:
-            traj = Trajectory.model_validate_json(Path(p).read_text())
-        except Exception:
-            continue
-        for r in traj.rounds:
-            total_rounds += 1
-            if not r.quality.passed:
-                rejected_rounds += 1
-                for f in r.quality.failures:
-                    key = f"quality:{f.split(':')[0]}"
-                    reason_counts[key] = reason_counts.get(key, 0) + 1
-                if len(samples) < sample_size:
-                    samples.append(
-                        {
-                            "reason": "quality_failed",
-                            "failures": r.quality.failures,
-                            "payload_keys": list(r.candidate.payload.keys()),
-                        }
-                    )
-                continue
-            ev = r.evaluation
-            if ev is None or ev.accepted:
-                continue
-            rejected_rounds += 1
-            for reason in ev.rejection_reasons:
-                key = reason.split(" ")[0]  # e.g., "weak_avg" / "strong_avg" / "gap"
-                reason_counts[key] = reason_counts.get(key, 0) + 1
-            if len(samples) < sample_size:
-                samples.append(
-                    {
-                        "reason": "; ".join(ev.rejection_reasons),
-                        "weak_avg": ev.weak_avg,
-                        "strong_avg": ev.strong_avg,
-                        "gap": ev.gap,
-                        "payload_keys": list(r.candidate.payload.keys()),
-                    }
-                )
-
-    return {
-        "total_rounds": total_rounds,
-        "rejected_rounds": rejected_rounds,
-        "reason_counts": reason_counts,
-        "samples": samples,
-    }
-
-
-# ---------------------------------------------------------------------------
 # Mutator: LLM proposes an edit to the harness
 # ---------------------------------------------------------------------------
 
@@ -176,8 +116,9 @@ class Mutator:
         "Add NEW rules, not paraphrases of existing ones. Keep rule strings imperative and specific."
     )
 
-    def __init__(self, client: LLMClient):
-        self.client = client
+    def __init__(self, llm: LLMClient, model_key: str):
+        self.llm = llm
+        self.model_key = model_key
 
     def propose(self, parent: HarnessSpec, failure_summary: dict[str, Any]) -> dict[str, Any]:
         user = json.dumps(
@@ -189,16 +130,29 @@ class Mutator:
             },
             indent=2,
         )
+        request_id = stable_id("metaopt-mutator", parent.harness_id,
+                               parent.iteration, json.dumps(failure_summary)[:200])
+        request = LLMRequest(
+            request_id=request_id,
+            item_id="metaopt",
+            round_n=parent.iteration,
+            role="meta_mutator",
+            model_key=self.model_key,
+            messages=[
+                {"role": "system", "content": self.SYSTEM},
+                {"role": "user", "content": user},
+            ],
+            json_mode=True,
+        )
         try:
-            return self.client.complete_json(
-                [
-                    {"role": "system", "content": self.SYSTEM},
-                    {"role": "user", "content": user},
-                ]
-            )
+            resp = self.llm.complete(request)
+            return resp.parse_json()
         except (ValueError, json.JSONDecodeError) as e:
             logger.warning("mutator parse failure: {}", e)
             return {"rationale": "mutator parse error; no mutation applied"}
+        except Exception as e:
+            logger.warning("mutator call failed: {}", e)
+            return {"rationale": f"mutator error: {e}; no mutation applied"}
 
 
 # ---------------------------------------------------------------------------
@@ -268,23 +222,70 @@ def evaluate_harness(
     run_id: str,
     output_dir: Path,
 ) -> tuple[float, Path]:
-    """Run the orchestrator with this harness on the given source items.
+    """Run with this harness on the given source items via Runner.
 
     Returns (acceptance_rate, run_dir). acceptance_rate = accepted / N.
     """
-    # Clone the run config so per-eval overrides don't pollute the caller.
     cfg = run_cfg.model_copy(deep=True)
     cfg.output_dir = str(output_dir)
     cfg.run_id = run_id
-    cfg.resume = False  # each eval is a fresh trajectory
+    cfg.resume = False
     cfg.max_examples = max(len(source_ids), 1)
     cfg.loop.max_rounds = min(cfg.loop.max_rounds, cfg.metaopt.inner_max_rounds)
 
-    orch = Orchestrator(cfg, run_id=run_id, harness=harness, grounding_filter=set(source_ids))
-    summary = orch.run()
-    accepted = int(summary.get("accepted", 0))
-    rate = accepted / max(len(source_ids), 1)
-    return rate, orch.writer.root
+    runner = Runner(cfg, run_id=run_id, harness=harness, source_id_filter=set(source_ids))
+    summary = runner.run()
+    rate = summary.accepted / max(len(source_ids), 1)
+    return rate, runner.run_dir
+
+
+def aggregate_failures_from_db(run_db_path: Path, *, sample_size: int = 3) -> dict[str, Any]:
+    """Compute the failure histogram for an inner run by querying its run.db."""
+    if not run_db_path.exists():
+        return {"total_rounds": 0, "rejected_rounds": 0, "reason_counts": {}, "samples": []}
+    store = Store(run_db_path)
+    try:
+        reason_counts: dict[str, int] = {}
+        samples: list[dict[str, Any]] = []
+        cur = store.conn.execute(
+            """SELECT r.candidate_blob, r.quality_blob, r.eval_blob, r.accepted
+               FROM rounds r JOIN items i ON i.item_id = r.item_id"""
+        )
+        total = 0
+        rejected = 0
+        for row in cur.fetchall():
+            total += 1
+            quality = json.loads(row["quality_blob"]) if row["quality_blob"] else None
+            ev = json.loads(row["eval_blob"]) if row["eval_blob"] else None
+            if quality and not quality.get("passed", False):
+                rejected += 1
+                for f in quality.get("failures") or []:
+                    key = f"quality:{str(f).split(':')[0]}"
+                    reason_counts[key] = reason_counts.get(key, 0) + 1
+                if len(samples) < sample_size:
+                    samples.append({"reason": "quality_failed", "failures": quality.get("failures") or []})
+                continue
+            if ev is None or ev.get("accepted"):
+                continue
+            rejected += 1
+            for r in ev.get("rejection_reasons") or []:
+                key = str(r).split(" ")[0]
+                reason_counts[key] = reason_counts.get(key, 0) + 1
+            if len(samples) < sample_size:
+                samples.append({
+                    "reason": "; ".join(ev.get("rejection_reasons") or []),
+                    "weak_avg": ev.get("weak_avg"),
+                    "strong_avg": ev.get("strong_avg"),
+                    "gap": ev.get("gap"),
+                })
+        return {
+            "total_rounds": total,
+            "rejected_rounds": rejected,
+            "reason_counts": reason_counts,
+            "samples": samples,
+        }
+    finally:
+        store.close()
 
 
 # ---------------------------------------------------------------------------
@@ -320,12 +321,11 @@ class MetaOptimizer:
             )
         mutator_cfg = self.meta.mutator or run_cfg.orchestrator
         self.mutator = Mutator(
-            LLMClient(
-                mutator_cfg,
-                role="meta_mutator",
-                timeout_s=run_cfg.request_timeout_s,
+            LLMClient(LLMConfig(
                 max_retries=run_cfg.max_retries,
-            )
+                request_timeout_s=run_cfg.request_timeout_s,
+            )),
+            model_key=mutator_cfg.provider_model,
         )
 
         # Compute deterministic train/val split.
@@ -500,8 +500,7 @@ class MetaOptimizer:
                 "reason_counts": {},
                 "samples": [],
             }
-        traj_dir = run_dir / "trajectories"
-        return aggregate_failures(traj_dir.glob("*.json"))
+        return aggregate_failures_from_db(run_dir / "run.db")
 
     def _record_iter(
         self,

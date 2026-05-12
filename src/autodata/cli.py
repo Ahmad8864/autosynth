@@ -23,8 +23,8 @@ from rich.table import Table
 
 from autodata.config import RunConfig, load_config
 from autodata.metaopt import MetaOptimizer
-from autodata.orchestrator import Orchestrator
-from autodata.writer import RunWriter
+from autodata.runner import Runner
+from autodata.store import Store
 
 app = typer.Typer(
     add_completion=False, no_args_is_help=True, help="autodata: agentic synthetic data generation"
@@ -43,21 +43,29 @@ def _configure_logging(verbose: bool) -> None:
 def run_cmd(
     config: Path = typer.Option(..., "--config", "-c", exists=True, help="YAML config path"),
     run_id: str | None = typer.Option(None, "--run-id", help="Override run id"),
+    resume: str | None = typer.Option(None, "--resume", help="Resume a prior run by id"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Execute the generate→verify→evaluate→reflect→refine loop."""
     _configure_logging(verbose)
     cfg = load_config(config)
-    orch = Orchestrator(cfg, run_id=run_id)
-    summary = orch.run()
+    if resume:
+        run_id = resume
+        cfg.resume = True
+    runner = Runner(cfg, run_id=run_id)
+    summary = runner.run()
 
-    table = Table(title=f"run {orch.run_id} summary")
+    table = Table(title=f"run {runner.run_id} summary")
     table.add_column("metric")
     table.add_column("value")
-    for k, v in summary.items():
-        table.add_row(str(k), str(v))
+    table.add_row("accepted", str(summary.accepted))
+    table.add_row("rejected", str(summary.rejected))
+    table.add_row("cost_usd", f"{summary.cost_usd:.4f}")
+    for k, v in summary.state_counts.items():
+        table.add_row(f"  state:{k}", str(v))
     console.print(table)
-    console.print(f"[green]output_dir:[/green] {orch.writer.root}")
+    console.print(f"[green]output_dir:[/green] {runner.run_dir}")
+    console.print(f"[dim]export with: autodata export --run {runner.run_dir} --format jsonl[/dim]")
 
 
 @app.command("metaopt")
@@ -100,32 +108,45 @@ def init_domain_cmd(
 
 
 @app.command("inspect-run")
-def inspect_run_cmd(run_dir: Path = typer.Argument(..., exists=True)):
-    """Print accepted/rejected counts and the per-trajectory outcome."""
-    summary = run_dir / "summary.json"
-    if summary.exists():
-        console.print_json(summary.read_text())
-    traj_dir = run_dir / "trajectories"
-    if not traj_dir.exists():
-        return
-    table = Table(title="trajectories")
+def inspect_run_cmd(
+    run_dir: Path = typer.Argument(..., exists=True),
+    stuck: bool = typer.Option(False, "--stuck", help="Show only non-terminal items"),
+):
+    """Show per-item state, counts, and last error from the run.db."""
+    db = run_dir / "run.db"
+    if not db.exists():
+        console.print(f"[red]no run.db at {db}[/red]")
+        raise typer.Exit(1)
+    store = Store(db)
+    run_row = next(iter(store.conn.execute("SELECT * FROM runs").fetchall()), None)
+    if run_row is None:
+        console.print("[red]no run row in this database[/red]")
+        raise typer.Exit(1)
+    run_id = run_row["run_id"]
+    counts = store.items_terminal_counts(run_id)
+    cost = store.cost_so_far(run_id)
+    console.print(f"[bold]run:[/bold] {run_id}  [dim](status: {run_row['status']})[/dim]")
+    console.print(f"[bold]cost:[/bold] ${cost:.4f}")
+    for state, n in counts.items():
+        console.print(f"  {state}: {n}")
+
+    where = "AND state NOT IN ('ACCEPTED','REJECTED')" if stuck else ""
+    rows = store.conn.execute(
+        f"""SELECT item_id, source_id, state, current_round, final_round, rejection_reasons
+            FROM items WHERE run_id=? {where} ORDER BY updated_at""",
+        (run_id,),
+    ).fetchall()
+    table = Table(title=f"items ({'stuck' if stuck else 'all'})")
     table.add_column("source_id")
-    table.add_column("rounds")
-    table.add_column("accepted_round")
-    table.add_column("final weak_avg")
-    table.add_column("final strong_avg")
-    table.add_column("final gap")
-    for path in sorted(traj_dir.glob("*.json")):
-        data = json.loads(path.read_text())
-        rounds = data.get("rounds", [])
-        last_ev = (rounds[-1].get("evaluation") if rounds else None) or {}
+    table.add_column("state")
+    table.add_column("round")
+    table.add_column("rejection")
+    for row in rows:
         table.add_row(
-            data.get("source_id", "?"),
-            str(data.get("total_rounds", 0)),
-            str(data.get("final_accepted_round", "—")),
-            _fmt(last_ev.get("weak_avg")),
-            _fmt(last_ev.get("strong_avg")),
-            _fmt(last_ev.get("gap")),
+            row["source_id"],
+            row["state"],
+            str(row["current_round"]),
+            (row["rejection_reasons"] or "")[:80],
         )
     console.print(table)
 
@@ -134,31 +155,76 @@ def inspect_run_cmd(run_dir: Path = typer.Argument(..., exists=True)):
 def export_cmd(
     run: Path = typer.Option(..., "--run", exists=True),
     format: str = typer.Option("jsonl", "--format", "-f"),
+    out: Path | None = typer.Option(None, "--out", "-o"),
 ):
-    """Export the accepted dataset. format: jsonl (default) or hf."""
-    accepted = run / "accepted.jsonl"
+    """Export the accepted dataset from a run's run.db."""
+    db = run / "run.db"
+    if not db.exists():
+        console.print(f"[red]no run.db at {db}[/red]")
+        raise typer.Exit(1)
+    store = Store(db)
+    run_row = next(iter(store.conn.execute("SELECT run_id FROM runs LIMIT 1")), None)
+    if run_row is None:
+        console.print("[red]no run row[/red]")
+        raise typer.Exit(1)
+    run_id = run_row["run_id"]
     if format == "jsonl":
-        if not accepted.exists():
-            console.print("[red]no accepted.jsonl found[/red]")
-            raise typer.Exit(1)
-        console.print(f"[green]ready:[/green] {accepted}")
+        target = out or (run / "accepted.jsonl")
+        n = store.export_jsonl(run_id, target)
+        console.print(f"[green]wrote {n} records to[/green] {target}")
         return
     if format == "hf":
-        snap = run / "config.snapshot.yaml"
-        if not snap.exists():
-            console.print("[red]missing config.snapshot.yaml[/red]")
+        target = out or (run / "hf_export")
+        result = store.export_hf(run_id, target)
+        if result is None:
+            console.print("[red]hf export failed (install autodata[hf]?)[/red]")
             raise typer.Exit(1)
-        cfg = RunConfig.model_validate(yaml.safe_load(snap.read_text()))
-        cfg.output_dir = str(run.parent)
-        writer = RunWriter(cfg, run.name)
-        out = writer.export_hf()
-        if out:
-            console.print(f"[green]exported HF dataset to[/green] {out}")
-        else:
-            raise typer.Exit(1)
+        console.print(f"[green]exported HF dataset to[/green] {result}")
         return
     console.print(f"[red]unknown format[/red] {format}")
     raise typer.Exit(2)
+
+
+@app.command("resume")
+def resume_cmd(
+    run_dir: Path = typer.Argument(..., exists=True),
+    config: Path | None = typer.Option(None, "--config", "-c",
+                                       help="Override config (else use the snapshot)"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+):
+    """Resume an interrupted run from its on-disk state."""
+    _configure_logging(verbose)
+    snap = run_dir / "config.snapshot.yaml"
+    cfg_path = config or snap
+    if not cfg_path.exists():
+        console.print(f"[red]no config to resume with at {cfg_path}[/red]")
+        raise typer.Exit(1)
+    cfg = load_config(cfg_path) if cfg_path == config else RunConfig.model_validate(
+        yaml.safe_load(snap.read_text())
+    )
+    # Output already includes the run_id segment; strip it for the runner.
+    cfg.output_dir = str(run_dir.parent)
+    cfg.resume = True
+    runner = Runner(cfg, run_id=run_dir.name)
+    summary = runner.run()
+    console.print(f"resumed {runner.run_id}: accepted={summary.accepted} rejected={summary.rejected}")
+
+
+@app.command("status")
+def status_cmd(run_dir: Path = typer.Argument(..., exists=True)):
+    """One-shot status table: state counts + cost. Same data as inspect-run, terser."""
+    db = run_dir / "run.db"
+    if not db.exists():
+        console.print(f"[red]no run.db at {db}[/red]")
+        raise typer.Exit(1)
+    store = Store(db)
+    run_row = next(iter(store.conn.execute("SELECT * FROM runs LIMIT 1")), None)
+    if run_row is None:
+        raise typer.Exit(1)
+    counts = store.items_terminal_counts(run_row["run_id"])
+    console.print(f"{run_row['run_id']}  status={run_row['status']}  "
+                  f"cost=${store.cost_so_far(run_row['run_id']):.4f}  "
+                  f"states={dict(counts)}")
 
 
 def _fmt(v: Any) -> str:

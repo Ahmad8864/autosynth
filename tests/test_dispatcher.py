@@ -83,7 +83,7 @@ def _seed_run(store: Store, cfg: RunConfig, docs_dir: Path) -> tuple[Dispatcher,
 
 # Mock scenario: deterministic accept path.
 def _disp_happy(role: str, messages):
-    from autodata.models import _canonical_role, _join_messages
+    from autodata.llm import _canonical_role, _join_messages
     all_text = _join_messages(messages)
     canon = _canonical_role(role, all_text)
     if canon == "challenger":

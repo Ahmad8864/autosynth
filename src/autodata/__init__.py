@@ -20,7 +20,7 @@ from autodata.domain import (
     rubric,
 )
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness, make_harness
-from autodata.models import LLMClient, register_mock
+from autodata.llm import LLMClient, LLMConfig, LLMRequest, RateLimitSpec, Response, register_mock
 from autodata.schemas import (
     Candidate,
     EvalReport,
@@ -63,5 +63,9 @@ __all__ = [
     "apply_harness",
     # Provider hooks
     "LLMClient",
+    "LLMConfig",
+    "LLMRequest",
+    "RateLimitSpec",
+    "Response",
     "register_mock",
 ]

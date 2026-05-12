@@ -151,13 +151,11 @@ def test_mock_dispatch_routes_to_registered_handler():
     assert resp.request_id == "req-1"
 
 
-def test_mock_dispatch_shares_registry_with_legacy_models():
-    # Mocks registered via autodata.models.register_mock must be reachable.
-    from autodata.models import register_mock as legacy_register_mock
-    legacy_register_mock("llm_legacy_echo", lambda role, msgs: "from-legacy")
+def test_mock_dispatch_falls_back_to_default_on_unknown_scenario():
     client = LLMClient()
-    resp = client.complete(_req(model_key="mock/llm_legacy_echo"))
-    assert resp.text == "from-legacy"
+    resp = client.complete(_req(model_key="mock/this_scenario_doesnt_exist", role="weak"))
+    # Default scripted handler returns the weak solver's canned text.
+    assert "general AI topics" in resp.text or resp.text == "{}"
 
 
 def test_mock_response_parses_json():
