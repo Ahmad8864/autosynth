@@ -20,6 +20,7 @@ from typing import Protocol
 
 from loguru import logger
 
+from autodata.dispatcher.hydration import row_to_llm_request
 from autodata.llm import LLMClient, LLMRequest, Response
 from autodata.store import RequestRow, Store
 
@@ -124,7 +125,7 @@ def make_fulfill_batch(provider: BatchProvider):
             groups[_provider_of(r.model_key)].append(r)
 
         for provider_prefix, group in groups.items():
-            llm_requests = [_row_to_request(r) for r in group]
+            llm_requests = [row_to_llm_request(r) for r in group]
             try:
                 handle = provider.submit(llm_requests)
             except Exception as e:
@@ -181,12 +182,3 @@ def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
 def _provider_of(model_key: str) -> str:
     """Return the provider prefix of a LiteLLM model string (``openai/x`` → ``openai``)."""
     return model_key.split("/", 1)[0]
-
-
-def _row_to_request(r: RequestRow) -> LLMRequest:
-    return LLMRequest(
-        request_id=r.request_id, item_id=r.item_id, round_n=r.round_n,
-        role=r.role, model_key=r.model_key, messages=r.messages,
-        json_mode=r.json_mode, attempt=r.attempt,
-        parent_response_id=r.parent_response_id,
-    )

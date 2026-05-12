@@ -9,10 +9,9 @@ The run loop, in pseudocode::
         check budget; honor signals
 
 ``fulfill`` is a strategy callable — :func:`fulfill_local` (thread-pool) is
-shipped here; the batch-API variant lives in :mod:`autodata.dispatcher_batch`.
-:meth:`Dispatcher._load_item_state` reconstructs in-flight state from the
-store before each call to :func:`pipeline.step`;
-:meth:`Dispatcher._persist_step_result` writes the result back.
+the default; the batch-API variant lives in :mod:`autodata.dispatcher.batch`.
+DTO mapping (store rows ↔ frozen pipeline state) lives in
+:mod:`autodata.dispatcher.hydration` so the run loop stays focused on flow.
 """
 from __future__ import annotations
 
@@ -22,25 +21,24 @@ import signal
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from loguru import logger
 
 from autodata.config import RunConfig
+from autodata.dispatcher.hydration import (
+    accepted_extras,
+    hydrate_responses,
+    load_item_state,
+    request_to_row,
+)
+from autodata.dispatcher.local import fulfill_local
 from autodata.domain import DomainAdapter, GroundingItem
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec
-from autodata.llm import LLMClient, LLMRequest, Response
-from autodata.pipeline import (
-    TERMINAL_STATES,
-    ItemState,
-    State,
-    StepResponse,
-    StepResult,
-    step,
-)
+from autodata.llm import LLMClient
+from autodata.pipeline import TERMINAL_STATES, State, StepResult, step
 from autodata.safety import SafetyFilter, load_filter
-from autodata.schemas import Candidate, EvalReport, QualityCheck, Round
 from autodata.store import (
     ITEM_ACCEPTED,
     ITEM_REJECTED,
@@ -63,54 +61,6 @@ class RunSummary:
 
 
 Fulfill = Callable[[list[RequestRow], "Dispatcher"], None]
-
-
-def fulfill_local(requests: list[RequestRow], dispatcher: Dispatcher) -> None:
-    """Thread-pool concurrent HTTP. Each request becomes a future; responses
-    are inserted as they complete. Uses the dispatcher's persistent pool."""
-    if not requests:
-        return
-    pool = dispatcher._executor()
-    futures = [pool.submit(_one_request, r, dispatcher) for r in requests]
-    for fut in as_completed(futures):
-        try:
-            fut.result()
-        except Exception:
-            logger.exception("dispatcher fulfill worker error")
-
-
-def _one_request(req_row: RequestRow, dispatcher: Dispatcher) -> None:
-    request = _row_to_llm_request(req_row)
-    try:
-        resp: Response = dispatcher.llm.complete(request)
-    except Exception as e:
-        logger.warning("request {} failed: {}", req_row.request_id, e)
-        dispatcher.store.mark_request_failed(req_row.request_id, str(e)[:500])
-        return
-    dispatcher.store.insert_response(
-        request_id=req_row.request_id,
-        model=resp.model,
-        text=resp.text,
-        prompt_tokens=resp.prompt_tokens,
-        completion_tokens=resp.completion_tokens,
-        cost_usd=resp.cost_usd,
-        duration_ms=resp.duration_ms,
-    )
-
-
-def _row_to_llm_request(r: RequestRow) -> LLMRequest:
-    """Hydrate a stored RequestRow back into an LLMRequest for fulfillment."""
-    return LLMRequest(
-        request_id=r.request_id,
-        item_id=r.item_id,
-        round_n=r.round_n,
-        role=r.role,
-        model_key=r.model_key,
-        messages=r.messages,
-        json_mode=r.json_mode,
-        attempt=r.attempt,
-        parent_response_id=r.parent_response_id,
-    )
 
 
 class Dispatcher:
@@ -203,8 +153,8 @@ class Dispatcher:
         return len(rows)
 
     def _advance_one(self, item_row) -> None:
-        item_state = self._load_item_state(item_row)
-        responses = self._hydrate_responses(item_row["item_id"], item_row["updated_at"])
+        item_state = load_item_state(self.store, item_row)
+        responses = hydrate_responses(self.store, item_row["item_id"], item_row["updated_at"])
         grounding = self.grounding.get(item_state.source_id)
         if grounding is None:
             logger.error(
@@ -258,7 +208,7 @@ class Dispatcher:
             )
             if accepted:
                 payload = self.domain.format_accepted(
-                    completed.candidate, _accepted_extras(new_state, completed),
+                    completed.candidate, accepted_extras(new_state, completed),
                 )
                 self.store.insert_accepted(
                     item_id=new_state.item_id,
@@ -289,7 +239,7 @@ class Dispatcher:
             )
 
         if result.new_requests:
-            self.store.insert_requests([_request_to_row(r) for r in result.new_requests])
+            self.store.insert_requests([request_to_row(r) for r in result.new_requests])
 
         final_round = (
             new_state.current_round if new_state.state in TERMINAL_STATES else None
@@ -312,83 +262,6 @@ class Dispatcher:
             return 0
         self.fulfill(claimed, self)
         return len(claimed)
-
-    def _load_item_state(self, item_row) -> ItemState:
-        item_id = item_row["item_id"]
-        rounds_rows = self.store.rounds_for_item(item_id)
-        current_round = int(item_row["current_round"])
-
-        rounds_history: list[Round] = []
-        current_round_blob: dict | None = None
-        for r in rounds_rows:
-            obj = _row_to_round(r)
-            if r["round_n"] < current_round:
-                rounds_history.append(obj)
-            elif r["round_n"] == current_round:
-                current_round_blob = dict(r)
-
-        candidate = None
-        quality = None
-        if current_round_blob is not None:
-            if current_round_blob["candidate_blob"]:
-                candidate = Candidate.model_validate_json(current_round_blob["candidate_blob"])
-            if current_round_blob["quality_blob"]:
-                quality = QualityCheck.model_validate_json(current_round_blob["quality_blob"])
-
-        scores = self.store.scores_for_round(item_id, current_round)
-        weak_scores = tuple(s for s in scores if s.solver == "weak")
-        strong_scores = tuple(s for s in scores if s.solver == "strong")
-
-        # last_feedback from previous round's reflection column.
-        last_feedback: tuple[str, ...] = ()
-        if current_round > 1:
-            prev = self.store.get_round(item_id, current_round - 1)
-            if prev and prev["reflection"]:
-                try:
-                    last_feedback = tuple(json.loads(prev["reflection"]))
-                except (json.JSONDecodeError, TypeError):
-                    last_feedback = ()
-
-        source_metadata = (json.loads(item_row["source_metadata"])
-                           if item_row["source_metadata"] else {})
-        rejection_reasons = tuple(
-            json.loads(item_row["rejection_reasons"])
-            if item_row["rejection_reasons"] else []
-        )
-
-        return ItemState(
-            item_id=item_id,
-            run_id=item_row["run_id"],
-            source_id=item_row["source_id"],
-            domain=item_row["domain"],
-            state=State(item_row["state"]),
-            current_round=current_round,
-            rounds_history=tuple(rounds_history),
-            candidate=candidate,
-            quality=quality,
-            weak_scores=weak_scores,
-            strong_scores=strong_scores,
-            last_feedback=last_feedback,
-            source_metadata=source_metadata,
-            rejection_reasons=rejection_reasons,
-        )
-
-    def _hydrate_responses(self, item_id: str, since_ts: str) -> list[StepResponse]:
-        """Pull responses + matching request/parent fields in a single query."""
-        out: list[StepResponse] = []
-        for row in self.store.hydrate_responses(item_id, since_ts):
-            is_judge = row["role"] == "judge" and row["parent_response_id"] is not None
-            out.append(StepResponse(
-                request_id=row["request_id"],
-                role=row["role"],
-                round_n=row["round_n"],
-                attempt=row["attempt"],
-                text=row["text"],
-                parent_response_id=row["parent_response_id"],
-                solver_response_text=(row["parent_text"] or "") if is_judge else None,
-                solver_role=row["parent_role"] if is_judge else None,
-            ))
-        return out
 
     def _normalize_for_resume(self) -> None:
         if not self.cfg.resume:
@@ -452,58 +325,3 @@ class Dispatcher:
             state_counts=counts,
             cost_usd=self.store.cost_so_far(self.run_id),
         )
-
-
-def _request_to_row(r: LLMRequest) -> dict:
-    return {
-        "request_id": r.request_id,
-        "item_id": r.item_id,
-        "round_n": r.round_n,
-        "role": r.role,
-        "model_key": r.model_key,
-        "attempt": r.attempt,
-        "messages": r.messages,
-        "json_mode": r.json_mode,
-        "parent_response_id": r.parent_response_id,
-    }
-
-
-def _row_to_round(row) -> Round:
-    candidate = (Candidate.model_validate_json(row["candidate_blob"])
-                 if row["candidate_blob"] else None)
-    quality = (QualityCheck.model_validate_json(row["quality_blob"])
-               if row["quality_blob"] else None)
-    evaluation = (EvalReport.model_validate_json(row["eval_blob"])
-                  if row["eval_blob"] else None)
-    # A historical round (round_n < current_round) always has a persisted
-    # candidate; the placeholders here only matter for partially-written rows
-    # observed mid-write during resume.
-    return Round(
-        refinement_round=int(row["round_n"]),
-        candidate=candidate or _PLACEHOLDER_CANDIDATE,
-        quality=quality or QualityCheck(passed=False),
-        evaluation=evaluation,
-        reflection=row["reflection"],
-    )
-
-
-_PLACEHOLDER_CANDIDATE = Candidate(
-    candidate_id="missing", domain="missing", source_id="missing",
-    payload={}, rubric=[],
-)
-
-
-def _accepted_extras(item: ItemState, round_obj: Round) -> dict:
-    ev = round_obj.evaluation
-    return {
-        "run_id": item.run_id,
-        "item_id": item.item_id,
-        "source_id": item.source_id,
-        "refinement_round": round_obj.refinement_round,
-        "weak_avg": ev.weak_avg if ev else None,
-        "strong_avg": ev.strong_avg if ev else None,
-        "gap": ev.gap if ev else None,
-        "weak_scores": [s.model_dump() for s in (ev.weak_scores if ev else [])],
-        "strong_scores": [s.model_dump() for s in (ev.strong_scores if ev else [])],
-        "acceptance_rationale": ev.acceptance_rationale if ev else None,
-    }

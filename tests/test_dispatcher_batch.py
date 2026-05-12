@@ -17,10 +17,10 @@ from autodata.config import (
     ModelConfig,
     RunConfig,
 )
-from autodata.dispatcher import Dispatcher
-from autodata.dispatcher_batch import (
+from autodata.dispatcher import (
     BatchHandle,
     BatchResult,
+    Dispatcher,
     MockBatchProvider,
     make_fulfill_batch,
     poll_outstanding_batches,
