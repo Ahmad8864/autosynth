@@ -21,7 +21,6 @@ from tenacity import (
 )
 
 from autodata.llm.mock import dispatch_mock
-from autodata.llm.pricing import compute_cost
 from autodata.llm.rate_limit import RateLimitSpec, TokenBucket
 from autodata.llm.types import LLMRequest, Response
 
@@ -46,6 +45,7 @@ class LLMClient:
         self.cfg = cfg or LLMConfig()
         self._buckets: dict[str, TokenBucket] = {}
         self._buckets_lock = threading.Lock()
+        self._prices_registered = False
 
     # ---- entry point ----------------------------------------------------
 
@@ -99,8 +99,26 @@ class LLMClient:
 
     # ---- real (LiteLLM) dispatch ---------------------------------------
 
+    def _register_price_overrides(self, litellm: Any) -> None:
+        if not self.cfg.prices:
+            return
+        registry: dict[str, dict[str, float]] = {}
+        for model_key, pair in self.cfg.prices.items():
+            if len(pair) < 2:
+                continue
+            registry[model_key] = {
+                "input_cost_per_token": float(pair[0]) / 1_000_000,
+                "output_cost_per_token": float(pair[1]) / 1_000_000,
+            }
+        if registry:
+            litellm.register_model(registry)
+
     def _call_real(self, req: LLMRequest) -> Response:
         import litellm  # lazy import
+
+        if not self._prices_registered:
+            self._register_price_overrides(litellm)
+            self._prices_registered = True
 
         @retry(
             stop=stop_after_attempt(self.cfg.max_retries),
@@ -138,7 +156,10 @@ class LLMClient:
             "prompt_tokens": int(getattr(usage_obj, "prompt_tokens", 0) or 0),
             "completion_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
         }
-        cost = compute_cost(req.model_key, usage, overrides=self.cfg.prices)
+        try:
+            cost = float(litellm.completion_cost(completion_response=resp))
+        except Exception:
+            cost = None
         return Response(
             request_id=req.request_id,
             model=req.model_key,

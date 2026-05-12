@@ -1,10 +1,8 @@
 """Tests for the new event-sourced LLMClient (autodata.llm).
 
 Covers: token-bucket math, rate-limit glob matching, mock dispatch
-preserves the legacy register_mock contract, cost accounting from a known
-price table, retry on transient errors. The legacy autodata.models is
-left untouched and not tested here — its tests live in test_mock_provider.py
-until commit 6 deletes it.
+preserves the legacy register_mock contract, cost accounting delegated
+to ``litellm.completion_cost``, retry on transient errors.
 """
 from __future__ import annotations
 
@@ -21,7 +19,6 @@ from autodata.llm import (
     RateLimitSpec,
     Response,
     TokenBucket,
-    price_for,
     register_mock,
 )
 
@@ -166,24 +163,6 @@ def test_mock_response_parses_json():
 
 
 # ---------------------------------------------------------------------------
-# Pricing
-# ---------------------------------------------------------------------------
-
-def test_price_for_known_model():
-    p = price_for("openai/gpt-4o-mini")
-    assert p == (0.15, 0.60)
-
-
-def test_price_for_unknown_model_returns_none():
-    assert price_for("brand-new-provider/foo") is None
-
-
-def test_price_override():
-    p = price_for("custom/foo", overrides={"custom/foo": [1.0, 2.0]})
-    assert p == (1.0, 2.0)
-
-
-# ---------------------------------------------------------------------------
 # Real (LiteLLM) dispatch — mocked
 # ---------------------------------------------------------------------------
 
@@ -209,8 +188,15 @@ def test_real_dispatch_computes_cost(monkeypatch):
         calls.append(kwargs)
         return fake
 
+    cost_calls: list[Any] = []
+
+    def fake_cost(*, completion_response):
+        cost_calls.append(completion_response)
+        return 0.000045
+
     import litellm
     monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm, "completion_cost", fake_cost)
 
     client = LLMClient()
     req = LLMRequest(request_id="r-1", item_id="i", round_n=1, role="weak",
@@ -220,10 +206,61 @@ def test_real_dispatch_computes_cost(monkeypatch):
     assert resp.text == "the answer"
     assert resp.prompt_tokens == 100
     assert resp.completion_tokens == 50
-    # (100 * 0.15 + 50 * 0.60) / 1e6 = 0.000045
+    assert cost_calls == [fake]
     assert resp.cost_usd == pytest.approx(0.000045, rel=1e-6)
     assert calls[0]["model"] == "openai/gpt-4o-mini"
     assert calls[0]["temperature"] == 0.7  # default
+
+
+def test_real_dispatch_cost_none_when_litellm_raises(monkeypatch):
+    fake = _FakeResp("hi")
+
+    def fake_completion(**kwargs):
+        return fake
+
+    def boom(*, completion_response):
+        raise RuntimeError("unknown model")
+
+    import litellm
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm, "completion_cost", boom)
+
+    client = LLMClient()
+    req = LLMRequest(request_id="r-cost-none", item_id="i", round_n=1, role="weak",
+                     model_key="brand-new-provider/foo",
+                     messages=[{"role": "user", "content": "x"}])
+    resp = client.complete(req)
+    assert resp.cost_usd is None
+
+
+def test_price_override_registers_with_litellm(monkeypatch):
+    fake = _FakeResp("hi")
+    registered: list[dict[str, Any]] = []
+
+    def fake_completion(**kwargs):
+        return fake
+
+    def fake_register(reg):
+        registered.append(reg)
+
+    import litellm
+    monkeypatch.setattr(litellm, "completion", fake_completion)
+    monkeypatch.setattr(litellm, "register_model", fake_register)
+    monkeypatch.setattr(litellm, "completion_cost", lambda *, completion_response: 0.0)
+
+    client = LLMClient(LLMConfig(prices={"custom/foo": [1.0, 2.0]}))
+    req = LLMRequest(request_id="r-reg", item_id="i", round_n=1, role="weak",
+                     model_key="custom/foo",
+                     messages=[{"role": "user", "content": "x"}])
+    client.complete(req)
+    # And again — registration should be a one-shot.
+    client.complete(req)
+    assert registered == [{
+        "custom/foo": {
+            "input_cost_per_token": 1.0 / 1_000_000,
+            "output_cost_per_token": 2.0 / 1_000_000,
+        }
+    }]
 
 
 def test_real_dispatch_passes_json_mode_and_overrides(monkeypatch):
