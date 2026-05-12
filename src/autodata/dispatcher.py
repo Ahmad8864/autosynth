@@ -27,7 +27,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 from loguru import logger
 
@@ -133,6 +133,7 @@ class Dispatcher:
         harness: HarnessSpec | None = None,
         grounding: dict[str, GroundingItem] | None = None,
         fulfill: Fulfill = fulfill_local,
+        poll_in_flight: Optional[Callable[["Dispatcher"], int]] = None,
     ):
         self.store = store
         self.llm = llm
@@ -142,6 +143,7 @@ class Dispatcher:
         self.harness = harness or DEFAULT_HARNESS
         self.grounding = grounding or {}
         self.fulfill = fulfill
+        self.poll_in_flight = poll_in_flight
         self.safety_filter: Optional[SafetyFilter] = (
             load_filter(cfg.safety.filter) if cfg.safety.enabled else None
         )
@@ -168,9 +170,10 @@ class Dispatcher:
         while not self._stop.is_set():
             advanced = self._advance_ready_items()
             dispatched = self._dispatch_pending()
+            polled = self.poll_in_flight(self) if self.poll_in_flight else 0
             self._mark_unrecoverable_items()    # any newly-capped items → REJECTED
             in_flight = self.store.in_flight_count(self.run_id)
-            if not advanced and not dispatched and in_flight == 0:
+            if not advanced and not dispatched and not polled and in_flight == 0:
                 if not self.store.has_non_terminal_items(self.run_id):
                     break
                 if self.store.pending_count(self.run_id) == 0:
