@@ -2,40 +2,47 @@
 
 Commands:
   autodata run --config configs/example.yaml
+  autodata metaopt --config configs/metaopt.yaml
   autodata init-domain NAME --out my_domain.py
   autodata inspect-run RUN_DIR
   autodata export --run RUN_DIR --format jsonl|hf
 """
+
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 import typer
+import yaml
 from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
-from autodata.config import load_config
+from autodata.config import RunConfig, load_config
 from autodata.metaopt import MetaOptimizer
 from autodata.orchestrator import Orchestrator
+from autodata.writer import RunWriter
 
-app = typer.Typer(add_completion=False, no_args_is_help=True, help="autodata: agentic synthetic data generation")
+app = typer.Typer(
+    add_completion=False, no_args_is_help=True, help="autodata: agentic synthetic data generation"
+)
 console = Console()
 
 
 def _configure_logging(verbose: bool) -> None:
     logger.remove()
-    logger.add(sys.stderr, level="DEBUG" if verbose else "INFO",
-               format="<level>{level: <7}</level> | {message}")
+    logger.add(
+        sys.stderr, level="DEBUG" if verbose else "INFO", format="<level>{level: <7}</level> | {message}"
+    )
 
 
 @app.command("run")
 def run_cmd(
     config: Path = typer.Option(..., "--config", "-c", exists=True, help="YAML config path"),
-    run_id: Optional[str] = typer.Option(None, "--run-id", help="Override run id"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Override run id"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
     """Execute the generate→verify→evaluate→reflect→refine loop."""
@@ -55,7 +62,9 @@ def run_cmd(
 
 @app.command("metaopt")
 def metaopt_cmd(
-    config: Path = typer.Option(..., "--config", "-c", exists=True, help="YAML config; metaopt.enabled must be true"),
+    config: Path = typer.Option(
+        ..., "--config", "-c", exists=True, help="YAML config; metaopt.enabled must be true"
+    ),
     rng_seed: int = typer.Option(0, "--rng-seed"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ):
@@ -135,14 +144,10 @@ def export_cmd(
         console.print(f"[green]ready:[/green] {accepted}")
         return
     if format == "hf":
-        from autodata.config import RunConfig
-        from autodata.writer import RunWriter
-
         snap = run / "config.snapshot.yaml"
         if not snap.exists():
             console.print("[red]missing config.snapshot.yaml[/red]")
             raise typer.Exit(1)
-        import yaml
         cfg = RunConfig.model_validate(yaml.safe_load(snap.read_text()))
         cfg.output_dir = str(run.parent)
         writer = RunWriter(cfg, run.name)
@@ -156,7 +161,7 @@ def export_cmd(
     raise typer.Exit(2)
 
 
-def _fmt(v) -> str:
+def _fmt(v: Any) -> str:
     return f"{v:.3f}" if isinstance(v, (int, float)) else "—"
 
 
@@ -198,10 +203,10 @@ class {cls}(DomainAdapter):
         return [{{"role": "user", "content": json.dumps(candidate.payload)}}]
 
     def quality_prompt(self, candidate: Candidate):
-        return [{{"role": "user", "content": "Audit this candidate; return JSON {{passed,failures,notes}}"}}]
+        return [{{"role": "user", "content": "ROLE:QUALITY. Audit candidate; return JSON {{passed,failures,notes}}"}}]
 
     def judge_prompt(self, candidate: Candidate, solver_response: str, solver_role: str):
-        return [{{"role": "user", "content": f"Score against rubric; return JSON. solver={{solver_role}} resp={{solver_response}}"}}]
+        return [{{"role": "user", "content": f"ROLE:JUDGE. Score against rubric. solver={{solver_role}} resp={{solver_response}}"}}]
 '''
 
 

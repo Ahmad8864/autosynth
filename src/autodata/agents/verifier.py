@@ -1,7 +1,6 @@
 """Verifier/Judge — runs both the quality audit and the rubric scoring."""
-from __future__ import annotations
 
-from typing import Any, Optional
+from __future__ import annotations
 
 from loguru import logger
 
@@ -13,7 +12,7 @@ from autodata.utils import clamp
 
 
 class VerifierJudge:
-    def __init__(self, client: LLMClient, domain: DomainAdapter, harness: Optional[HarnessSpec] = None):
+    def __init__(self, client: LLMClient, domain: DomainAdapter, harness: HarnessSpec | None = None):
         self.client = client
         self.domain = domain
         self.harness = harness or DEFAULT_HARNESS
@@ -32,7 +31,9 @@ class VerifierJudge:
             notes=data.get("notes"),
         )
 
-    def score(self, candidate: Candidate, solver_response: str, solver_role: str, attempt: int) -> SolverScore:
+    def score(
+        self, candidate: Candidate, solver_response: str, solver_role: str, attempt: int
+    ) -> SolverScore:
         messages = self.domain.judge_prompt(candidate, solver_response, solver_role)
         messages = apply_harness(messages, self.harness.rules_for("judge"))
         try:

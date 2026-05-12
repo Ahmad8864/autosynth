@@ -3,15 +3,16 @@
 Grounds the challenger on lightweight 'topic seeds' rather than a corpus,
 demonstrating that the framework is not document-bound.
 """
+
 from __future__ import annotations
 
 import json
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from autodata.domain import DomainAdapter, GroundingItem, register_domain
+from autodata.domain import DomainAdapter, GroundingItem, bullet_list, register_domain
 from autodata.schemas import Candidate
 from autodata.utils import stable_id
-
 
 _DEFAULT_TOPICS = [
     {"topic": "linear systems", "difficulty": "high-school"},
@@ -40,8 +41,8 @@ class MathWordProblems(DomainAdapter):
             )
 
     def generation_prompt(self, item, feedback, round_n, prior_payloads):
-        feedback_block = "\n".join(f"- {f}" for f in feedback) or "(none)"
-        prior_block = "\n".join(f"- {p.get('problem', '')[:140]}" for p in prior_payloads) or "(none)"
+        feedback_block = bullet_list(feedback)
+        prior_block = bullet_list(prior_payloads, key="problem", limit=140)
         sys = (
             "ROLE:CHALLENGER. Construct ONE math word problem with a single, verifiable numeric answer. "
             "Difficulty should yield a clear weak/strong gap: a careful reasoner solves it, a careless one does not. "
@@ -61,6 +62,8 @@ class MathWordProblems(DomainAdapter):
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
     def validate_candidate(self, candidate: Candidate) -> list[str]:
+        # Rubric weight bounds are enforced upstream (challenger clamps,
+        # RubricCriterion validates ge=1); no need to re-check here.
         errs: list[str] = []
         p = candidate.payload
         if not isinstance(p.get("problem"), str) or len(p["problem"].strip()) < 10:
@@ -69,9 +72,6 @@ class MathWordProblems(DomainAdapter):
             errs.append("reference_output (numeric answer) missing")
         if not candidate.rubric:
             errs.append("rubric is empty")
-        for c in candidate.rubric:
-            if c.weight < 1 or c.weight > 7:
-                errs.append(f"rubric criterion {c.id} weight {c.weight} outside 1..7")
         return errs
 
     def solver_prompt(self, candidate: Candidate, solver_role: str):
@@ -90,11 +90,14 @@ class MathWordProblems(DomainAdapter):
             "weights 1..7 and correctness criterion carries the highest weight. "
             "Return JSON: {passed: bool, failures: [strings], notes: string}."
         )
-        usr = json.dumps({
-            "problem": candidate.payload.get("problem"),
-            "reference_output": candidate.reference_output,
-            "rubric": [c.model_dump() for c in candidate.rubric],
-        }, indent=2)
+        usr = json.dumps(
+            {
+                "problem": candidate.payload.get("problem"),
+                "reference_output": candidate.reference_output,
+                "rubric": [c.model_dump() for c in candidate.rubric],
+            },
+            indent=2,
+        )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
     def judge_prompt(self, candidate: Candidate, solver_response: str, solver_role: str):

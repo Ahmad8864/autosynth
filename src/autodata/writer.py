@@ -8,11 +8,12 @@ Layout under `output_dir/<run_id>/`:
   summary.json                 # run-level metrics (updated incrementally)
   hf_export/                   # optional Hugging Face datasets dir
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from loguru import logger
@@ -20,7 +21,7 @@ from loguru import logger
 from autodata.config import RunConfig
 from autodata.domain import DomainAdapter
 from autodata.schemas import Trajectory
-from autodata.utils import append_jsonl, write_json
+from autodata.utils import append_jsonl, read_jsonl, write_pydantic
 
 
 class RunWriter:
@@ -36,6 +37,11 @@ class RunWriter:
         self.trajectories_dir.mkdir(exist_ok=True)
         self._summary: dict[str, Any] = self._load_summary()
 
+    @property
+    def summary(self) -> dict[str, Any]:
+        """Snapshot of run-level counters. Returns a copy."""
+        return dict(self._summary)
+
     def snapshot_config(self) -> None:
         path = self.root / "config.snapshot.yaml"
         path.write_text(yaml.safe_dump(self.cfg.model_dump(mode="json"), sort_keys=False))
@@ -43,21 +49,20 @@ class RunWriter:
     def trajectory_path(self, source_id: str) -> Path:
         return self.trajectories_dir / f"{source_id}.json"
 
-    def load_trajectory(self, source_id: str) -> Optional[Trajectory]:
+    def load_trajectory(self, source_id: str) -> Trajectory | None:
         path = self.trajectory_path(source_id)
-        if not path.exists():
+        try:
+            text = path.read_text()
+        except FileNotFoundError:
             return None
         try:
-            return Trajectory.model_validate_json(path.read_text())
+            return Trajectory.model_validate_json(text)
         except Exception as e:
             logger.warning("could not parse existing trajectory {}: {}", path, e)
             return None
 
     def write_trajectory(self, trajectory: Trajectory) -> None:
-        write_json(
-            self.trajectory_path(trajectory.source_id),
-            trajectory.model_dump(mode="json"),
-        )
+        write_pydantic(self.trajectory_path(trajectory.source_id), trajectory)
 
     def write_accepted(self, record: dict[str, Any]) -> None:
         append_jsonl(self.accepted_path, record)
@@ -66,6 +71,10 @@ class RunWriter:
     def write_rejected(self, record: dict[str, Any]) -> None:
         append_jsonl(self.rejected_path, record)
         self._bump("rejected")
+
+    def bump(self, key: str) -> None:
+        """Increment a named counter on the summary (e.g., 'errors')."""
+        self._bump(key)
 
     def _bump(self, key: str) -> None:
         self._summary[key] = int(self._summary.get(key, 0)) + 1
@@ -79,26 +88,27 @@ class RunWriter:
         self.summary_path.write_text(json.dumps(self._summary, indent=2, default=str))
 
     def _load_summary(self) -> dict[str, Any]:
-        if not self.summary_path.exists():
+        try:
+            text = self.summary_path.read_text()
+        except FileNotFoundError:
             return {"run_id": self.run_id, "accepted": 0, "rejected": 0}
         try:
-            return json.loads(self.summary_path.read_text())
+            return json.loads(text)
         except json.JSONDecodeError:
             return {"run_id": self.run_id, "accepted": 0, "rejected": 0}
 
     # ---- HF export ----------------------------------------------------------
 
-    def export_hf(self) -> Optional[Path]:
+    def export_hf(self) -> Path | None:
         try:
             from datasets import Dataset  # type: ignore
         except ImportError:
             logger.warning("`datasets` not installed; skip HF export. `pip install autodata[hf]`")
             return None
-        records = []
-        if self.accepted_path.exists():
-            for line in self.accepted_path.read_text().splitlines():
-                if line.strip():
-                    records.append(json.loads(line))
+        if not self.accepted_path.exists():
+            logger.warning("no accepted records to export")
+            return None
+        records = list(read_jsonl(self.accepted_path))
         if not records:
             logger.warning("no accepted records to export")
             return None
@@ -115,7 +125,11 @@ def build_accepted_record(
     extra: dict[str, Any],
 ) -> dict[str, Any]:
     r = trajectory.accepted_round()
-    assert r is not None, "trajectory has no accepted round"
+    if r is None:
+        raise ValueError(
+            f"trajectory {trajectory.trajectory_id} has no accepted round; "
+            "build_accepted_record must only be called after acceptance."
+        )
     ev = r.evaluation
     return domain.format_accepted(
         r.candidate,

@@ -4,13 +4,15 @@ Reads .txt/.md/.json files from a directory; instructs the challenger to
 produce a question that requires reading the *specific* document (not generic
 knowledge), plus a reference answer and a rubric.
 """
+
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-from autodata.domain import DomainAdapter, GroundingItem, register_domain
+from autodata.domain import DomainAdapter, GroundingItem, bullet_list, register_domain
 from autodata.schemas import Candidate
 from autodata.utils import stable_id
 
@@ -39,10 +41,8 @@ class QAFromDocuments(DomainAdapter):
 
     # 2. challenger prompt ----------------------------------------------------
     def generation_prompt(self, item, feedback, round_n, prior_payloads):
-        feedback_block = "\n".join(f"- {f}" for f in feedback) or "(none)"
-        prior_block = (
-            "\n".join(f"- {p.get('question', '')}" for p in prior_payloads) or "(none)"
-        )
+        feedback_block = bullet_list(feedback)
+        prior_block = bullet_list(prior_payloads, key="question")
         sys = (
             "ROLE:CHALLENGER. You are constructing a high-quality QA datapoint grounded in a SOURCE DOCUMENT. "
             "The question MUST be answerable only by someone who read THIS specific document — not from generic knowledge. "
@@ -64,6 +64,9 @@ class QAFromDocuments(DomainAdapter):
 
     # 3. validation -----------------------------------------------------------
     def validate_candidate(self, candidate: Candidate) -> list[str]:
+        # Rubric weight bounds are already enforced by the challenger
+        # (clamped to [1, rubric_max_weight]) and the RubricCriterion schema
+        # (ge=1), so we don't re-check them here.
         errs: list[str] = []
         p = candidate.payload
         if not isinstance(p.get("question"), str) or len(p["question"].strip()) < 5:
@@ -72,9 +75,6 @@ class QAFromDocuments(DomainAdapter):
             errs.append("reference_output missing or too short")
         if not candidate.rubric:
             errs.append("rubric is empty")
-        for c in candidate.rubric:
-            if c.weight < 1 or c.weight > 7:
-                errs.append(f"rubric criterion {c.id} weight {c.weight} outside 1..7")
         return errs
 
     # 4. solver prompt --------------------------------------------------------
@@ -98,12 +98,15 @@ class QAFromDocuments(DomainAdapter):
             "(c) the rubric is positive-only with integer weights 1..7 and covers correctness + source-specificity; "
             "(d) the reference_output is concrete. Return JSON: {passed: bool, failures: [strings], notes: string}."
         )
-        usr = json.dumps({
-            "question": candidate.payload.get("question"),
-            "context": candidate.payload.get("context"),
-            "reference_output": candidate.reference_output,
-            "rubric": [c.model_dump() for c in candidate.rubric],
-        }, indent=2)
+        usr = json.dumps(
+            {
+                "question": candidate.payload.get("question"),
+                "context": candidate.payload.get("context"),
+                "reference_output": candidate.reference_output,
+                "rubric": [c.model_dump() for c in candidate.rubric],
+            },
+            indent=2,
+        )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
     # 6. judge prompt ---------------------------------------------------------

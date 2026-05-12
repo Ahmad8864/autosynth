@@ -10,9 +10,8 @@ The Orchestrator and agents accept an optional `HarnessSpec`; when omitted
 they fall back to `DEFAULT_HARNESS`, so behavior is unchanged for callers
 that don't care about meta-optimization.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
@@ -36,7 +35,7 @@ class HarnessSpec(BaseModel):
     """
 
     harness_id: str
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     iteration: int = 0
     rationale: str = ""
 
@@ -51,8 +50,8 @@ class HarnessSpec(BaseModel):
     require_self_test: bool = False
 
     # Filled in by the meta-optimizer after evaluation.
-    train_score: Optional[float] = None
-    val_score: Optional[float] = None
+    train_score: float | None = None
+    val_score: float | None = None
 
     def rules_for(self, role: str) -> list[str]:
         rules = list(getattr(self, f"{role}_rules", []) or [])
@@ -74,7 +73,9 @@ class HarnessSpec(BaseModel):
         return _id("harness", repr(sorted(content.items())))
 
 
-def make_harness(*, parent_id: Optional[str] = None, iteration: int = 0, rationale: str = "", **fields) -> HarnessSpec:
+def make_harness(
+    *, parent_id: str | None = None, iteration: int = 0, rationale: str = "", **fields
+) -> HarnessSpec:
     """Construct a HarnessSpec with an auto-generated id."""
     hid = _id("h", iteration, parent_id or "", repr(sorted(fields.items())))
     return HarnessSpec(
@@ -118,6 +119,7 @@ DEFAULT_HARNESS: HarnessSpec = make_harness(
 # ---------------------------------------------------------------------------
 # Prompt injection helper used by every agent.
 # ---------------------------------------------------------------------------
+
 
 def apply_harness(messages: list[dict[str, str]], rules: list[str]) -> list[dict[str, str]]:
     """Append an 'ADDITIONAL RULES' block to the system message.

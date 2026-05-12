@@ -1,7 +1,8 @@
 """Challenger: turns grounding + feedback into a structured Candidate."""
+
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -18,7 +19,7 @@ class ChallengerAgent:
         client: LLMClient,
         domain: DomainAdapter,
         rubric_max_weight: int = 7,
-        harness: Optional[HarnessSpec] = None,
+        harness: HarnessSpec | None = None,
     ):
         self.client = client
         self.domain = domain

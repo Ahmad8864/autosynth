@@ -1,4 +1,5 @@
 """End-to-end mocked loop: happy path, reject path, resume."""
+
 from __future__ import annotations
 
 import json
@@ -14,8 +15,9 @@ from autodata.config import (
 from autodata.orchestrator import Orchestrator
 
 
-def _cfg(sample_docs: Path, output_dir: Path, scenario: str, *,
-         max_rounds: int = 2, weak_zero: bool = False) -> RunConfig:
+def _cfg(
+    sample_docs: Path, output_dir: Path, scenario: str, *, max_rounds: int = 2, weak_zero: bool = False
+) -> RunConfig:
     return RunConfig(
         run_id="test-run",
         output_dir=str(output_dir),

@@ -10,47 +10,49 @@ Mutations operate on `HarnessSpec` (text rules + a few numeric knobs), not on
 Python source. The expressive scope for prompt edits is preserved; the safety
 profile is dramatically smaller than letting an LLM rewrite the repo.
 """
+
 from __future__ import annotations
 
 import copy
 import json
 import math
 import random
-from datetime import datetime, timezone
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any
 
+import yaml
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from autodata.config import MetaOptConfig, RunConfig
+from autodata.config import RunConfig
 from autodata.domain import build_domain
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec, make_harness
 from autodata.models import LLMClient
 from autodata.orchestrator import Orchestrator
-from autodata.schemas import Round, Trajectory
-from autodata.utils import stable_id, write_json
-
+from autodata.schemas import Trajectory
+from autodata.utils import make_run_id, write_json, write_pydantic
 
 # ---------------------------------------------------------------------------
 # Population / record types
 # ---------------------------------------------------------------------------
 
+
 class HarnessRecord(BaseModel):
     spec: HarnessSpec
     train_score: float = 0.0
-    val_score: Optional[float] = None
+    val_score: float | None = None
     accepted: bool = True  # seed is always accepted
-    parent_accepted_id: Optional[str] = None
+    parent_accepted_id: str | None = None
 
 
 class MetaIteration(BaseModel):
     iteration: int
     parent_id: str
     child_id: str
-    mutation: dict = Field(default_factory=dict)
+    mutation: dict[str, Any] = Field(default_factory=dict)
     train_score: float
-    val_score: Optional[float] = None
+    val_score: float | None = None
     accepted: bool
     reasons: list[str] = Field(default_factory=list)
 
@@ -58,6 +60,7 @@ class MetaIteration(BaseModel):
 # ---------------------------------------------------------------------------
 # Boltzmann selection
 # ---------------------------------------------------------------------------
+
 
 def boltzmann_select(records: list[HarnessRecord], temperature: float, rng: random.Random) -> HarnessRecord:
     """Select a parent record proportional to exp(train_score / T)."""
@@ -75,7 +78,7 @@ def boltzmann_select(records: list[HarnessRecord], temperature: float, rng: rand
     weights = [w / total for w in weights]
     r = rng.random()
     cum = 0.0
-    for rec, w in zip(accepted, weights):
+    for rec, w in zip(accepted, weights, strict=True):
         cum += w
         if r <= cum:
             return rec
@@ -86,10 +89,11 @@ def boltzmann_select(records: list[HarnessRecord], temperature: float, rng: rand
 # Failure aggregation from prior eval trajectories
 # ---------------------------------------------------------------------------
 
-def aggregate_failures(traj_paths: Iterable[Path], sample_size: int = 3) -> dict:
+
+def aggregate_failures(traj_paths: Iterable[Path], sample_size: int = 3) -> dict[str, Any]:
     """Summarize rejection reasons + sample payloads across one eval run."""
     reason_counts: dict[str, int] = {}
-    samples: list[dict] = []
+    samples: list[dict[str, Any]] = []
     total_rounds = 0
     rejected_rounds = 0
 
@@ -106,8 +110,13 @@ def aggregate_failures(traj_paths: Iterable[Path], sample_size: int = 3) -> dict
                     key = f"quality:{f.split(':')[0]}"
                     reason_counts[key] = reason_counts.get(key, 0) + 1
                 if len(samples) < sample_size:
-                    samples.append({"reason": "quality_failed", "failures": r.quality.failures,
-                                    "payload_keys": list(r.candidate.payload.keys())})
+                    samples.append(
+                        {
+                            "reason": "quality_failed",
+                            "failures": r.quality.failures,
+                            "payload_keys": list(r.candidate.payload.keys()),
+                        }
+                    )
                 continue
             ev = r.evaluation
             if ev is None or ev.accepted:
@@ -117,13 +126,15 @@ def aggregate_failures(traj_paths: Iterable[Path], sample_size: int = 3) -> dict
                 key = reason.split(" ")[0]  # e.g., "weak_avg" / "strong_avg" / "gap"
                 reason_counts[key] = reason_counts.get(key, 0) + 1
             if len(samples) < sample_size:
-                samples.append({
-                    "reason": "; ".join(ev.rejection_reasons),
-                    "weak_avg": ev.weak_avg,
-                    "strong_avg": ev.strong_avg,
-                    "gap": ev.gap,
-                    "payload_keys": list(r.candidate.payload.keys()),
-                })
+                samples.append(
+                    {
+                        "reason": "; ".join(ev.rejection_reasons),
+                        "weak_avg": ev.weak_avg,
+                        "strong_avg": ev.strong_avg,
+                        "gap": ev.gap,
+                        "payload_keys": list(r.candidate.payload.keys()),
+                    }
+                )
 
     return {
         "total_rounds": total_rounds,
@@ -136,6 +147,7 @@ def aggregate_failures(traj_paths: Iterable[Path], sample_size: int = 3) -> dict
 # ---------------------------------------------------------------------------
 # Mutator: LLM proposes an edit to the harness
 # ---------------------------------------------------------------------------
+
 
 class Mutator:
     SYSTEM = (
@@ -167,19 +179,24 @@ class Mutator:
     def __init__(self, client: LLMClient):
         self.client = client
 
-    def propose(self, parent: HarnessSpec, failure_summary: dict) -> dict:
-        user = json.dumps({
-            "current_harness": parent.model_dump(
-                exclude={"harness_id", "parent_id", "iteration", "train_score", "val_score"}
-            ),
-            "failure_summary": failure_summary,
-        }, indent=2)
+    def propose(self, parent: HarnessSpec, failure_summary: dict[str, Any]) -> dict[str, Any]:
+        user = json.dumps(
+            {
+                "current_harness": parent.model_dump(
+                    exclude={"harness_id", "parent_id", "iteration", "train_score", "val_score"}
+                ),
+                "failure_summary": failure_summary,
+            },
+            indent=2,
+        )
         try:
-            return self.client.complete_json([
-                {"role": "system", "content": self.SYSTEM},
-                {"role": "user", "content": user},
-            ])
-        except Exception as e:
+            return self.client.complete_json(
+                [
+                    {"role": "system", "content": self.SYSTEM},
+                    {"role": "user", "content": user},
+                ]
+            )
+        except (ValueError, json.JSONDecodeError) as e:
             logger.warning("mutator parse failure: {}", e)
             return {"rationale": "mutator parse error; no mutation applied"}
 
@@ -191,7 +208,7 @@ class Mutator:
 _RULE_ROLES = ("challenger", "quality", "judge", "weak_solver", "strong_solver", "reflector")
 
 
-def apply_mutation(parent: HarnessSpec, mutation: dict, *, iteration: int) -> HarnessSpec:
+def apply_mutation(parent: HarnessSpec, mutation: dict[str, Any], *, iteration: int) -> HarnessSpec:
     """Apply an add/remove diff and produce a child HarnessSpec.
 
     Out-of-range indices, wrong types, and unknown keys are silently dropped —
@@ -242,6 +259,7 @@ def apply_mutation(parent: HarnessSpec, mutation: dict, *, iteration: int) -> Ha
 # Evaluation: run the orchestrator with a harness and compute a score
 # ---------------------------------------------------------------------------
 
+
 def evaluate_harness(
     run_cfg: RunConfig,
     harness: HarnessSpec,
@@ -273,29 +291,42 @@ def evaluate_harness(
 # The MetaOptimizer
 # ---------------------------------------------------------------------------
 
+
 class MetaOptimizer:
-    def __init__(self, run_cfg: RunConfig, *, seed_harness: Optional[HarnessSpec] = None, rng_seed: int = 0):
+    def __init__(self, run_cfg: RunConfig, *, seed_harness: HarnessSpec | None = None, rng_seed: int = 0):
         self.cfg = run_cfg
         self.meta = run_cfg.metaopt
         if not self.meta.enabled:
             raise ValueError("RunConfig.metaopt.enabled must be true")
 
         self.rng = random.Random(rng_seed)
-        self.run_id = f"metaopt-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{stable_id(run_cfg.model_dump_json(), length=6)}"
+        self.run_id = make_run_id("metaopt", run_cfg.model_dump_json())
         self.root = Path(run_cfg.output_dir) / self.meta.output_subdir / self.run_id
         self.root.mkdir(parents=True, exist_ok=True)
 
-        # Snapshot config + seed harness early.
+        # Snapshot config as YAML, consistent with RunWriter.snapshot_config.
         (self.root / "config.snapshot.yaml").write_text(
-            json.dumps(self.cfg.model_dump(mode="json"), indent=2, default=str)
+            yaml.safe_dump(self.cfg.model_dump(mode="json"), sort_keys=False)
         )
 
         self.seed_harness = seed_harness or self._load_seed()
-        # Mutator client; fall back to orchestrator's model.
+        # Mutator client; falls back to the orchestrator's model. The mutator
+        # should ideally be a stronger reasoning model than the orchestrator
+        # (the paper relies on this), so warn loudly when the fallback kicks in.
+        if self.meta.mutator is None:
+            logger.warning(
+                "metaopt.mutator not set; falling back to orchestrator model — "
+                "consider configuring a stronger reasoning model for the mutator"
+            )
         mutator_cfg = self.meta.mutator or run_cfg.orchestrator
-        self.mutator = Mutator(LLMClient(mutator_cfg, role="meta_mutator",
-                                         timeout_s=run_cfg.request_timeout_s,
-                                         max_retries=run_cfg.max_retries))
+        self.mutator = Mutator(
+            LLMClient(
+                mutator_cfg,
+                role="meta_mutator",
+                timeout_s=run_cfg.request_timeout_s,
+                max_retries=run_cfg.max_retries,
+            )
+        )
 
         # Compute deterministic train/val split.
         self.train_ids, self.val_ids = self._split_grounding()
@@ -308,18 +339,20 @@ class MetaOptimizer:
 
     # ---- main loop ---------------------------------------------------------
 
-    def run(self) -> dict:
+    def run(self) -> dict[str, Any]:
         # 1. Evaluate the seed
         seed_train_rate, _ = self._eval(self.seed_harness, "train", iter_n=0)
         seed_val_rate, _ = self._eval(self.seed_harness, "val", iter_n=0)
         self.seed_harness.train_score = seed_train_rate
         self.seed_harness.val_score = seed_val_rate
-        self.population.append(HarnessRecord(
-            spec=self.seed_harness,
-            train_score=seed_train_rate,
-            val_score=seed_val_rate,
-            accepted=True,
-        ))
+        self.population.append(
+            HarnessRecord(
+                spec=self.seed_harness,
+                train_score=seed_train_rate,
+                val_score=seed_val_rate,
+                accepted=True,
+            )
+        )
         self._save_state(iter_n=0)
         logger.info("[meta] seed harness: train={:.3f} val={:.3f}", seed_train_rate, seed_val_rate)
 
@@ -328,7 +361,7 @@ class MetaOptimizer:
             parent = boltzmann_select(self.population, self.meta.boltzmann_temp, self.rng)
             iter_dir = self.root / "iterations" / f"iter_{it:03d}"
             iter_dir.mkdir(parents=True, exist_ok=True)
-            write_json(iter_dir / "parent_harness.json", parent.spec.model_dump(mode="json"))
+            write_pydantic(iter_dir / "parent_harness.json", parent.spec)
 
             # Collect failures from the parent's most recent training run.
             failure_summary = self._collect_failures(parent.spec)
@@ -338,20 +371,27 @@ class MetaOptimizer:
             write_json(iter_dir / "mutation.json", mutation)
 
             child = apply_mutation(parent.spec, mutation, iteration=it)
-            write_json(iter_dir / "proposed_harness.json", child.model_dump(mode="json"))
+            write_pydantic(iter_dir / "proposed_harness.json", child)
 
             if child.fingerprint() == parent.spec.fingerprint():
                 logger.info("[meta] iter {}: mutation produced identical harness; skipping", it)
-                self._record_iter(it, parent, child, mutation,
-                                  train_score=parent.train_score, val_score=None,
-                                  accepted=False, reasons=["no_op_mutation"])
+                self._record_iter(
+                    it,
+                    parent,
+                    child,
+                    mutation,
+                    train_score=parent.train_score,
+                    val_score=None,
+                    accepted=False,
+                    reasons=["no_op_mutation"],
+                )
                 continue
 
             train_rate, _ = self._eval(child, "train", iter_n=it)
             child.train_score = train_rate
 
             decision_reasons: list[str] = []
-            val_rate: Optional[float] = None
+            val_rate: float | None = None
             accepted = False
             if train_rate <= parent.train_score:
                 decision_reasons.append(
@@ -374,24 +414,39 @@ class MetaOptimizer:
             self._record_iter(it, parent, child, mutation, train_rate, val_rate, accepted, decision_reasons)
 
             if accepted:
-                self.population.append(HarnessRecord(
-                    spec=child, train_score=train_rate, val_score=val_rate,
-                    accepted=True, parent_accepted_id=parent.spec.harness_id,
-                ))
-                logger.info("[meta] iter {}: ACCEPTED child {} (train {:.3f}, val {:.3f})",
-                            it, child.harness_id, train_rate, val_rate or 0.0)
+                self.population.append(
+                    HarnessRecord(
+                        spec=child,
+                        train_score=train_rate,
+                        val_score=val_rate,
+                        accepted=True,
+                        parent_accepted_id=parent.spec.harness_id,
+                    )
+                )
+                logger.info(
+                    "[meta] iter {}: ACCEPTED child {} (train {:.3f}, val {:.3f})",
+                    it,
+                    child.harness_id,
+                    train_rate,
+                    val_rate or 0.0,
+                )
             else:
-                self.population.append(HarnessRecord(
-                    spec=child, train_score=train_rate, val_score=val_rate,
-                    accepted=False, parent_accepted_id=parent.spec.harness_id,
-                ))
+                self.population.append(
+                    HarnessRecord(
+                        spec=child,
+                        train_score=train_rate,
+                        val_score=val_rate,
+                        accepted=False,
+                        parent_accepted_id=parent.spec.harness_id,
+                    )
+                )
                 logger.info("[meta] iter {}: rejected child ({})", it, "; ".join(decision_reasons))
 
             self._save_state(iter_n=it)
 
         # Final state
         best = self._best()
-        write_json(self.root / "best_harness.json", best.spec.model_dump(mode="json"))
+        write_pydantic(self.root / "best_harness.json", best.spec)
         return {
             "run_id": self.run_id,
             "iterations": len(self.iterations),
@@ -430,38 +485,51 @@ class MetaOptimizer:
         ids = self.train_ids if split == "train" else self.val_ids
         run_id = f"iter_{iter_n:03d}-{split}-{harness.harness_id}"
         split_root = self.root / "iterations" / f"iter_{iter_n:03d}" / split
-        rate, run_root = evaluate_harness(
-            self.cfg, harness, ids, run_id=run_id, output_dir=split_root
-        )
+        rate, run_root = evaluate_harness(self.cfg, harness, ids, run_id=run_id, output_dir=split_root)
         if split == "train":
             self._last_train_run_dir[harness.harness_id] = run_root
         return rate, run_root
 
-    def _collect_failures(self, parent: HarnessSpec) -> dict:
+    def _collect_failures(self, parent: HarnessSpec) -> dict[str, Any]:
         run_dir = self._last_train_run_dir.get(parent.harness_id)
         if run_dir is None:
-            return {"note": "no prior training run", "total_rounds": 0,
-                    "rejected_rounds": 0, "reason_counts": {}, "samples": []}
+            return {
+                "note": "no prior training run",
+                "total_rounds": 0,
+                "rejected_rounds": 0,
+                "reason_counts": {},
+                "samples": [],
+            }
         traj_dir = run_dir / "trajectories"
         return aggregate_failures(traj_dir.glob("*.json"))
 
-    def _record_iter(self, it: int, parent: HarnessRecord, child: HarnessSpec,
-                     mutation: dict, train_score: float, val_score: Optional[float],
-                     accepted: bool, reasons: list[str]) -> None:
+    def _record_iter(
+        self,
+        it: int,
+        parent: HarnessRecord,
+        child: HarnessSpec,
+        mutation: dict[str, Any],
+        train_score: float,
+        val_score: float | None,
+        accepted: bool,
+        reasons: list[str],
+    ) -> None:
         rec = MetaIteration(
-            iteration=it, parent_id=parent.spec.harness_id, child_id=child.harness_id,
-            mutation=mutation, train_score=train_score, val_score=val_score,
-            accepted=accepted, reasons=reasons,
+            iteration=it,
+            parent_id=parent.spec.harness_id,
+            child_id=child.harness_id,
+            mutation=mutation,
+            train_score=train_score,
+            val_score=val_score,
+            accepted=accepted,
+            reasons=reasons,
         )
         self.iterations.append(rec)
-        write_json(self.root / "iterations" / f"iter_{it:03d}" / "decision.json",
-                   rec.model_dump(mode="json"))
+        write_pydantic(self.root / "iterations" / f"iter_{it:03d}" / "decision.json", rec)
 
     def _save_state(self, iter_n: int) -> None:
-        write_json(self.root / "population.json",
-                   [r.model_dump(mode="json") for r in self.population])
-        write_json(self.root / "iterations_log.json",
-                   [i.model_dump(mode="json") for i in self.iterations])
+        write_pydantic(self.root / "population.json", self.population)
+        write_pydantic(self.root / "iterations_log.json", self.iterations)
 
     def _best(self) -> HarnessRecord:
         accepted = [r for r in self.population if r.accepted]

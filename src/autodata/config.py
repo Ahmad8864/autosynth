@@ -3,12 +3,13 @@
 Loaded from YAML (or JSON), validated with Pydantic. Env-var interpolation
 is supported via `${VAR}` and `${VAR:default}` in any string field.
 """
+
 from __future__ import annotations
 
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -18,9 +19,11 @@ _ENV_RE = re.compile(r"\$\{([A-Z0-9_]+)(?::([^}]*))?\}")
 
 def _interpolate(value: Any) -> Any:
     if isinstance(value, str):
+
         def sub(m: re.Match[str]) -> str:
             var, default = m.group(1), m.group(2)
             return os.environ.get(var, default if default is not None else m.group(0))
+
         return _ENV_RE.sub(sub, value)
     if isinstance(value, dict):
         return {k: _interpolate(v) for k, v in value.items()}
@@ -69,12 +72,12 @@ class DomainConfig(BaseModel):
     `pkg.module:Class`) selects the domain. `params` is passed to its ctor.
     """
 
-    name: Optional[str] = None
-    path: Optional[str] = None
+    name: str | None = None
+    path: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _one_of(self) -> "DomainConfig":
+    def _one_of(self) -> DomainConfig:
         if not self.name and not self.path:
             raise ValueError("domain.name or domain.path required")
         return self
@@ -82,7 +85,7 @@ class DomainConfig(BaseModel):
 
 class SafetyConfig(BaseModel):
     enabled: bool = False
-    filter: Optional[str] = None  # "module:attr"
+    filter: str | None = None  # "module:attr"
 
 
 class MetaOptConfig(BaseModel):
@@ -100,9 +103,9 @@ class MetaOptConfig(BaseModel):
     val_size: int = 4
     val_seed: int = 1  # for deterministic train/val split
     # Mutator model — usually a strong reasoning model. Falls back to orchestrator.
-    mutator: Optional[ModelConfig] = None
+    mutator: ModelConfig | None = None
     # If set, seed the population with the harness JSON at this path; otherwise DEFAULT_HARNESS.
-    seed_harness_path: Optional[str] = None
+    seed_harness_path: str | None = None
     # Cap inner runs so meta-opt doesn't sprawl.
     inner_max_examples_per_run: int = 8
     inner_max_rounds: int = 3
@@ -111,7 +114,7 @@ class MetaOptConfig(BaseModel):
 
 
 class RunConfig(BaseModel):
-    run_id: Optional[str] = None  # auto-generated if unset
+    run_id: str | None = None  # auto-generated if unset
     output_dir: str = "outputs"
     seed: int = 0
 
@@ -129,7 +132,7 @@ class RunConfig(BaseModel):
     max_concurrency: int = 1  # set >1 for concurrent source-item processing
     request_timeout_s: int = 60
     max_retries: int = 3
-    request_budget_usd: Optional[float] = None  # soft budget, advisory only
+    request_budget_usd: float | None = None  # soft budget, advisory only
 
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
 

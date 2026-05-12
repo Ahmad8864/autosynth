@@ -5,9 +5,8 @@ difficulty difference comes from the configured model + temperature, not from
 adversarial prompting (the paper warns against telling a weak model to be
 weak — that triggers gaming).
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from autodata.domain import DomainAdapter
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness
@@ -21,7 +20,7 @@ class SolverAgent:
         client: LLMClient,
         domain: DomainAdapter,
         role: str,
-        harness: Optional[HarnessSpec] = None,
+        harness: HarnessSpec | None = None,
     ):
         if role not in {"weak", "strong"}:
             raise ValueError(f"role must be 'weak' or 'strong', got {role!r}")

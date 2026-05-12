@@ -3,10 +3,11 @@
 These shapes are domain-agnostic. A domain plugin extends `Candidate.payload`
 and `Candidate.rubric` to carry its own structured content.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -37,14 +38,14 @@ class Candidate(BaseModel):
     source_id: str
     payload: dict[str, Any]
     rubric: list[RubricCriterion] = Field(default_factory=list)
-    reference_output: Optional[str] = None
+    reference_output: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class QualityCheck(BaseModel):
     passed: bool
     failures: list[str] = Field(default_factory=list)
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class SolverScore(BaseModel):
@@ -70,17 +71,17 @@ class EvalReport(BaseModel):
     gap: float = 0.0
     accepted: bool = False
     rejection_reasons: list[str] = Field(default_factory=list)
-    acceptance_rationale: Optional[str] = None
+    acceptance_rationale: str | None = None
 
 
 class Round(BaseModel):
     refinement_round: int
     candidate: Candidate
     quality: QualityCheck
-    evaluation: Optional[EvalReport] = None
-    reflection: Optional[str] = None
+    evaluation: EvalReport | None = None
+    reflection: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    ended_at: Optional[datetime] = None
+    ended_at: datetime | None = None
 
 
 class Trajectory(BaseModel):
@@ -90,13 +91,13 @@ class Trajectory(BaseModel):
     source_id: str
     source_metadata: dict[str, Any] = Field(default_factory=dict)
     rounds: list[Round] = Field(default_factory=list)
-    final_accepted_round: Optional[int] = None
+    final_accepted_round: int | None = None
     total_rounds: int = 0
 
-    def latest_round(self) -> Optional[Round]:
+    def latest_round(self) -> Round | None:
         return self.rounds[-1] if self.rounds else None
 
-    def accepted_round(self) -> Optional[Round]:
+    def accepted_round(self) -> Round | None:
         if self.final_accepted_round is None:
             return None
         for r in self.rounds:

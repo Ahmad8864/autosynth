@@ -20,15 +20,18 @@ There are two ways to register a domain:
 
    The framework dynamically imports the file and instantiates the class.
 """
+
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.util
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from autodata.schemas import Candidate, RubricCriterion
 
@@ -134,16 +137,15 @@ def register_domain(name: str):
         cls.name = name
         _REGISTRY[name] = cls
         return cls
+
     return deco
 
 
 def get_domain_class(name: str) -> type[DomainAdapter]:
     if name not in _REGISTRY:
         # Lazy-import built-ins so registration runs.
-        try:
+        with contextlib.suppress(ImportError):
             importlib.import_module("autodata.domains")
-        except ImportError:
-            pass
     if name not in _REGISTRY:
         raise KeyError(f"unknown domain {name!r}; registered: {sorted(_REGISTRY)}")
     return _REGISTRY[name]
@@ -173,7 +175,7 @@ def load_domain_from_path(spec: str) -> type[DomainAdapter]:
     return cls
 
 
-def build_domain(name: Optional[str], path: Optional[str], params: dict[str, Any]) -> DomainAdapter:
+def build_domain(name: str | None, path: str | None, params: dict[str, Any]) -> DomainAdapter:
     if path:
         cls = load_domain_from_path(path)
     elif name:
@@ -186,3 +188,28 @@ def build_domain(name: Optional[str], path: Optional[str], params: dict[str, Any
 # Convenience for rubric construction in domain plugins
 def rubric(*items: tuple[str, str, int]) -> list[RubricCriterion]:
     return [RubricCriterion(id=i, description=d, weight=w) for i, d, w in items]
+
+
+def bullet_list(
+    items: list[str] | list[dict[str, Any]],
+    *,
+    key: str | None = None,
+    limit: int = 0,
+    empty: str = "(none)",
+) -> str:
+    """Render a bulleted list for inclusion in a prompt.
+
+    - Pass a list of strings to bullet them directly.
+    - Pass a list of dicts plus ``key`` to extract that field from each dict.
+    - ``limit > 0`` truncates each rendered item to that many characters.
+    - Returns ``empty`` when the input is empty (default ``"(none)"``).
+    """
+    if not items:
+        return empty
+    if key is None:
+        lines = [str(x) for x in items]
+    else:
+        lines = [str(d.get(key, "") or "") for d in items]  # type: ignore[union-attr]
+    if limit > 0:
+        lines = [s[:limit] for s in lines]
+    return "\n".join(f"- {s}" for s in lines) or empty

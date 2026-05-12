@@ -11,13 +11,15 @@ Model strings:
   - "openrouter/anthropic/claude-haiku-4-5"
   - "mock/<scenario>"   — handled in-process
 """
+
 from __future__ import annotations
 
 import json
-import os
+import re
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
@@ -102,19 +104,27 @@ class LLMClient:
         text = choice.message.content or ""
         usage = getattr(resp, "usage", None)
         usage_dict = (
-            {"prompt_tokens": getattr(usage, "prompt_tokens", 0),
-             "completion_tokens": getattr(usage, "completion_tokens", 0),
-             "total_tokens": getattr(usage, "total_tokens", 0)}
-            if usage else {}
+            {
+                "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(usage, "completion_tokens", 0),
+                "total_tokens": getattr(usage, "total_tokens", 0),
+            }
+            if usage
+            else {}
         )
-        return LLMResponse(text=text, raw=resp.model_dump() if hasattr(resp, "model_dump") else {}, model=self.cfg.provider_model, usage=usage_dict)
+        return LLMResponse(
+            text=text,
+            raw=resp.model_dump() if hasattr(resp, "model_dump") else {},
+            model=self.cfg.provider_model,
+            usage=usage_dict,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Mock provider — scripted, role-aware, deterministic
 # ---------------------------------------------------------------------------
 
-MockHandler = Callable[[str, list[Message]], str]
+MockHandler = Callable[[str, list["Message"]], str]
 """(scenario, messages) -> raw text. Should usually be JSON."""
 
 
@@ -130,7 +140,14 @@ class _MockRegistry:
     def dispatch(self, provider_model: str, role: str, messages: list[Message]) -> LLMResponse:
         # provider_model = "mock/<scenario>"
         scenario = provider_model.split("/", 1)[1] if "/" in provider_model else "default"
-        handler = self._handlers.get(scenario) or self._handlers.get("default") or _default_handler
+        handler = self._handlers.get(scenario)
+        if handler is None:
+            if scenario not in ("default", "scripted"):
+                logger.warning(
+                    "mock scenario {!r} not registered; falling back to 'default'",
+                    scenario,
+                )
+            handler = self._handlers.get("default") or _default_handler
         text = handler(role, messages)
         return LLMResponse(text=text, raw={"mock": True, "scenario": scenario}, model=provider_model)
 
@@ -143,11 +160,51 @@ def register_mock(scenario: str, handler: MockHandler) -> None:
     _MOCK_REGISTRY.register(scenario, handler)
 
 
+# ---------------------------------------------------------------------------
+# Mock role routing helpers (used by handlers).
+# ---------------------------------------------------------------------------
+
+_ROLE_TAGS = (
+    ("challenger", "ROLE:CHALLENGER"),
+    ("reflector", "ROLE:REFLECTION"),
+    ("quality", "ROLE:QUALITY"),
+    ("judge", "ROLE:JUDGE"),
+    ("weak", "ROLE:WEAK"),
+    ("strong", "ROLE:STRONG"),
+    ("meta_mutator", "ROLE:META_MUTATOR"),
+)
+
+
+def _canonical_role(role: str, all_text: str) -> str:
+    """Map (LLMClient role, prompt text) → canonical role for mock dispatch.
+
+    A single LLMClient role can be used for multiple agents (e.g. the judge
+    client serves both quality_check and score), so mock handlers need to
+    inspect the prompt text in addition to the role.
+    """
+    for canon, tag in _ROLE_TAGS:
+        if role == canon or tag in all_text:
+            return canon
+    return role
+
+
+_ROUND_RE = re.compile(r"ROUND[=:\s]+(\d+)")
+
+
+def _peek_round(text: str) -> int:
+    m = _ROUND_RE.search(text)
+    return int(m.group(1)) if m else 1
+
+
+def _join_messages(messages: list[Message]) -> str:
+    return " ".join(m.get("content", "") for m in messages)
+
+
 def _default_handler(role: str, messages: list[Message]) -> str:
     """Built-in mock that simulates a realistic generation→accept trajectory.
 
-    Useful for tests and the bundled demo. It returns role-appropriate JSON.
-    The scripted behavior:
+    Useful for tests and the bundled demo. Returns role-appropriate JSON.
+    Behavior:
       - challenger emits a candidate (round-aware, gets harder over rounds)
       - quality verifier passes after round 1
       - weak solver answers shallowly (low rubric scores)
@@ -155,59 +212,64 @@ def _default_handler(role: str, messages: list[Message]) -> str:
       - judge scores per-rubric-criterion
       - reflector emits feedback bullets
     """
-    all_text = " ".join(m.get("content", "") for m in messages)
-    if role == "challenger" or "ROLE:CHALLENGER" in all_text:
+    all_text = _join_messages(messages)
+    canon = _canonical_role(role, all_text)
+
+    if canon == "challenger":
         round_n = _peek_round(all_text)
-        return json.dumps({
-            "payload": {
-                "question": f"What is the main contribution of the source, as understood at round {round_n}?",
-                "context": "Synthetic context snippet for mock run.",
-                "reasoning_skills": ["comprehension", "synthesis"],
-            },
-            "reference_output": "A concise synthesis of the source's main contribution.",
-            "rubric": [
-                {"id": "c1", "description": "Names the main contribution", "weight": 5},
-                {"id": "c2", "description": "Cites at least one supporting detail", "weight": 3},
-                {"id": "c3", "description": "Avoids generic boilerplate", "weight": 2},
-            ],
-        })
-    if role == "reflector" or "ROLE:REFLECTION" in all_text:
-        return json.dumps({
-            "feedback": [
-                "Make the question depend on a source-specific detail.",
-                "Avoid framings answerable from generic knowledge.",
-            ],
-            "new_angle": "Target a quantitative claim or design choice unique to the source.",
-        })
-    # Quality and judging share the same LLMClient role="judge", so probe by content first.
-    if "ROLE:QUALITY" in all_text:
+        return json.dumps(
+            {
+                "payload": {
+                    "question": f"What is the main contribution of the source, as understood at round {round_n}?",
+                    "context": "Synthetic context snippet for mock run.",
+                    "reasoning_skills": ["comprehension", "synthesis"],
+                },
+                "reference_output": "A concise synthesis of the source's main contribution.",
+                "rubric": [
+                    {"id": "c1", "description": "Names the main contribution", "weight": 5},
+                    {"id": "c2", "description": "Cites at least one supporting detail", "weight": 3},
+                    {"id": "c3", "description": "Avoids generic boilerplate", "weight": 2},
+                ],
+            }
+        )
+    if canon == "reflector":
+        return json.dumps(
+            {
+                "feedback": [
+                    "Make the question depend on a source-specific detail.",
+                    "Avoid framings answerable from generic knowledge.",
+                ],
+                "new_angle": "Target a quantitative claim or design choice unique to the source.",
+            }
+        )
+    if canon == "quality":
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
-    if "ROLE:JUDGE" in all_text or role == "judge":
+    if canon == "judge":
         solver_tag = "weak" if "[solver=weak]" in all_text else "strong"
         if solver_tag == "weak":
-            return json.dumps({
-                "per_criterion": {"c1": 0.2, "c2": 0.0, "c3": 0.1},
-                "total": 0.13,
-                "failure_modes": ["generic_response"],
-            })
-        return json.dumps({
-            "per_criterion": {"c1": 0.95, "c2": 0.85, "c3": 0.8},
-            "total": 0.88,
-            "failure_modes": [],
-        })
-    if role == "weak" or "ROLE:WEAK_SOLVER" in all_text:
+            return json.dumps(
+                {
+                    "per_criterion": {"c1": 0.2, "c2": 0.0, "c3": 0.1},
+                    "total": 0.13,
+                    "failure_modes": ["generic_response"],
+                }
+            )
+        return json.dumps(
+            {
+                "per_criterion": {"c1": 0.95, "c2": 0.85, "c3": 0.8},
+                "total": 0.88,
+                "failure_modes": [],
+            }
+        )
+    if canon == "weak":
         return "The source seems to be about general AI topics. It probably contributes something useful."
-    if role == "strong" or "ROLE:STRONG_SOLVER" in all_text:
-        return ("The source's main contribution is a method to iteratively generate training data "
-                "using weak/strong solver disagreement, supported by a quality verifier and reflective "
-                "recipe updates. Specifically it shows wide weak-strong gaps on accepted examples.")
+    if canon == "strong":
+        return (
+            "The source's main contribution is a method to iteratively generate training data "
+            "using weak/strong solver disagreement, supported by a quality verifier and reflective "
+            "recipe updates. Specifically it shows wide weak-strong gaps on accepted examples."
+        )
     return "{}"
-
-
-def _peek_round(text: str) -> int:
-    import re
-    m = re.search(r"ROUND[=:\s]+(\d+)", text)
-    return int(m.group(1)) if m else 1
 
 
 # Register the default scripted scenario.
@@ -230,52 +292,59 @@ _MARKER_RULE = "Target a quantitative or design-specific claim unique to the sou
 
 
 def _metaopt_handler(role: str, messages: list[Message]) -> str:
-    import json as _json
+    all_text = _join_messages(messages)
+    canon = _canonical_role(role, all_text)
 
-    all_text = " ".join(m.get("content", "") for m in messages)
+    if canon == "meta_mutator":
+        # On every call propose the marker rule; the metaopt loop detects a
+        # repeat fingerprint and skips subsequent duplicates.
+        return json.dumps(
+            {
+                "rationale": "Add source-specificity rule to widen weak/strong gap.",
+                "challenger_rules_add": [_MARKER_RULE],
+            }
+        )
 
-    if role == "meta_mutator" or "ROLE:META_MUTATOR" in all_text:
-        # On every call propose the marker rule; the metaopt loop will detect a
-        # repeat fingerprint and skip subsequent duplicates.
-        return _json.dumps({
-            "rationale": "Add source-specificity rule to widen weak/strong gap.",
-            "challenger_rules_add": [_MARKER_RULE],
-        })
-
-    if role == "challenger" or "ROLE:CHALLENGER" in all_text:
+    if canon == "challenger":
         # When the marker rule is in OUR system prompt, emit a rubric tagged
         # [SPECIFIC] — that tag flows downstream into the judge's prompt and
         # changes its scoring. This simulates "better instructions → better
         # candidate → judge can tell".
         marker = _MARKER_RULE in all_text
         c1 = "[SPECIFIC] Names a source-specific contribution" if marker else "Names contribution"
-        return _json.dumps({
-            "payload": {"question": "What specific contribution does this source make?",
-                        "context": "Synthetic context.", "reasoning_skills": ["synthesis"]},
-            "reference_output": "The contribution as named in the source.",
-            "rubric": [
-                {"id": "c1", "description": c1, "weight": 5},
-                {"id": "c2", "description": "Cites a detail from the source", "weight": 3},
-            ],
-        })
-    if role == "reflector" or "ROLE:REFLECTION" in all_text:
-        return _json.dumps({"feedback": ["push for source-specificity"], "new_angle": "quantitative claim"})
-    if "ROLE:QUALITY" in all_text:
-        return _json.dumps({"passed": True, "failures": [], "notes": "ok"})
-    if "ROLE:JUDGE" in all_text or role == "judge":
+        return json.dumps(
+            {
+                "payload": {
+                    "question": "What specific contribution does this source make?",
+                    "context": "Synthetic context.",
+                    "reasoning_skills": ["synthesis"],
+                },
+                "reference_output": "The contribution as named in the source.",
+                "rubric": [
+                    {"id": "c1", "description": c1, "weight": 5},
+                    {"id": "c2", "description": "Cites a detail from the source", "weight": 3},
+                ],
+            }
+        )
+    if canon == "reflector":
+        return json.dumps({"feedback": ["push for source-specificity"], "new_angle": "quantitative claim"})
+    if canon == "quality":
+        return json.dumps({"passed": True, "failures": [], "notes": "ok"})
+    if canon == "judge":
         # Detect [SPECIFIC] in the rubric (the judge prompt embeds the rubric).
         specific = "[SPECIFIC]" in all_text
         if "[solver=weak]" in all_text:
-            return _json.dumps({"per_criterion": {"c1": 0.25, "c2": 0.10}, "total": 0.20, "failure_modes": []})
-        return _json.dumps({
-            "per_criterion": {"c1": 0.95 if specific else 0.55,
-                              "c2": 0.7 if specific else 0.55},
-            "total": 0.85 if specific else 0.55,
-            "failure_modes": [] if specific else ["generic_response"],
-        })
-    if role == "weak" or "ROLE:WEAK" in all_text:
+            return json.dumps({"per_criterion": {"c1": 0.25, "c2": 0.10}, "total": 0.20, "failure_modes": []})
+        return json.dumps(
+            {
+                "per_criterion": {"c1": 0.95 if specific else 0.55, "c2": 0.7 if specific else 0.55},
+                "total": 0.85 if specific else 0.55,
+                "failure_modes": [] if specific else ["generic_response"],
+            }
+        )
+    if canon == "weak":
         return "generic weak attempt"
-    if role == "strong" or "ROLE:STRONG" in all_text:
+    if canon == "strong":
         return "specific strong attempt"
     return "{}"
 

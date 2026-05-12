@@ -1,4 +1,5 @@
 """Tests for the meta-optimization loop."""
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,7 @@ from autodata.config import (
     ModelConfig,
     RunConfig,
 )
-from autodata.harness import DEFAULT_HARNESS, HarnessSpec, make_harness
+from autodata.harness import make_harness
 from autodata.metaopt import (
     HarnessRecord,
     MetaOptimizer,
@@ -23,10 +24,10 @@ from autodata.metaopt import (
     boltzmann_select,
 )
 
-
 # ---------------------------------------------------------------------------
 # Boltzmann selection
 # ---------------------------------------------------------------------------
+
 
 def _record(score: float, hid: str = "h") -> HarnessRecord:
     spec = make_harness(challenger_rules=[hid])
@@ -65,6 +66,7 @@ def test_boltzmann_skips_unaccepted_when_possible():
 # ---------------------------------------------------------------------------
 # apply_mutation
 # ---------------------------------------------------------------------------
+
 
 def test_apply_mutation_adds_and_removes_rules():
     parent = make_harness(challenger_rules=["keep-this", "drop-this"], quality_rules=["q1"])
@@ -112,6 +114,7 @@ def test_apply_mutation_noop_yields_same_fingerprint():
 # ---------------------------------------------------------------------------
 # End-to-end mocked meta-opt loop
 # ---------------------------------------------------------------------------
+
 
 def _make_run_cfg(sample_docs_dir: Path, output_dir: Path, scenario: str = "metaopt") -> RunConfig:
     return RunConfig(
@@ -178,8 +181,10 @@ def test_metaopt_accepts_improving_mutation(tmp_path: Path):
     summary = opt.run()
 
     # Best should be the child (the marker rule was added).
-    pop = [HarnessRecord.model_validate(r) for r in
-           json.loads((Path(summary["output_dir"]) / "population.json").read_text())]
+    pop = [
+        HarnessRecord.model_validate(r)
+        for r in json.loads((Path(summary["output_dir"]) / "population.json").read_text())
+    ]
     accepted_children = [r for r in pop if r.accepted and r.spec.parent_id is not None]
     assert accepted_children, f"no mutation was accepted; pop={[r.model_dump() for r in pop]}"
     # The accepted child must contain the marker rule the mock mutator proposed.

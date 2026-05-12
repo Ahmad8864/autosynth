@@ -4,10 +4,11 @@ Pure function: given a list of solver scores and the configured thresholds,
 populate an EvalReport with weak/strong stats, gap, accept/reject, and
 human-readable reasons.
 """
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from statistics import mean
-from typing import Sequence
 
 from autodata.config import AcceptanceConfig
 from autodata.schemas import EvalReport, QualityCheck, SolverScore

@@ -1,17 +1,36 @@
-"""Utility helpers: deterministic IDs, JSON extraction, path helpers."""
+"""Utility helpers: deterministic IDs, JSON extraction, path helpers, timestamps."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+from collections.abc import Iterable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
+
+_FENCE_OPEN = re.compile(r"^```(?:json)?\s*")
+_FENCE_CLOSE = re.compile(r"\s*```\s*$")
 
 
 def stable_id(*parts: Any, length: int = 12) -> str:
     """Deterministic short ID from arbitrary parts."""
     h = hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
     return h[:length]
+
+
+def utcnow() -> datetime:
+    """Timezone-aware UTC `now()` — use everywhere instead of `datetime.now()`."""
+    return datetime.now(timezone.utc)
+
+
+def make_run_id(prefix: str, *seed_parts: Any) -> str:
+    """Compose a run id of the form `<prefix>-<utc-ts>-<short-hash>`."""
+    ts = utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return f"{prefix}-{ts}-{stable_id(*seed_parts, length=6)}"
 
 
 def extract_json(text: str) -> dict[str, Any]:
@@ -23,17 +42,15 @@ def extract_json(text: str) -> dict[str, Any]:
     if not text:
         raise ValueError("empty response")
     text = text.strip()
-    # Strip common code fences
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```\s*$", "", text)
+        text = _FENCE_OPEN.sub("", text)
+        text = _FENCE_CLOSE.sub("", text)
         text = text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Find first { or [ and last matching } or ]
     starts = [i for i, c in enumerate(text) if c in "{["]
     if not starts:
         raise ValueError(f"no JSON object found in response: {text[:200]!r}")
@@ -74,11 +91,35 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, default=str))
 
 
+def write_pydantic(path: Path, obj: BaseModel | list[BaseModel]) -> None:
+    """Serialize a Pydantic model (or list of models) to JSON on disk."""
+    if isinstance(obj, list):
+        data = [m.model_dump(mode="json") for m in obj]
+    else:
+        data = obj.model_dump(mode="json")
+    write_json(path, data)
+
+
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, default=str))
         f.write("\n")
+
+
+def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
+    """Stream records from a JSON-lines file, skipping blank/malformed lines."""
+    from loguru import logger
+
+    with path.open(encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as e:
+                logger.warning("skip malformed jsonl line {} in {}: {}", n, path, e)
 
 
 def clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
