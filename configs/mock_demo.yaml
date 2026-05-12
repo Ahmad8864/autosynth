@@ -1,0 +1,36 @@
+# End-to-end demo with the in-process MockLLMProvider.
+# No API keys required. Runs in ~1 second.
+
+run_id: mock-demo
+output_dir: outputs
+max_examples: 2
+
+domain:
+  name: qa_from_documents
+  params:
+    source_dir: examples/sample_docs
+    glob: "**/*.md"
+
+loop:
+  max_rounds: 3
+  weak_samples: 2
+  strong_samples: 2
+  stop_on_first_accept: true
+
+acceptance:
+  weak_avg_max: 0.65
+  weak_max_max: 0.75
+  forbid_weak_zero: false   # mock weak occasionally returns 0; allow for demo
+  strong_avg_min: 0.60
+  strong_avg_max: 0.95
+  min_gap: 0.20
+  require_quality_passed: true
+
+orchestrator: { provider_model: mock/scripted }
+challenger:   { provider_model: mock/scripted }
+weak_solver:  { provider_model: mock/scripted }
+strong_solver:{ provider_model: mock/scripted }
+judge:        { provider_model: mock/scripted }
+
+safety:
+  enabled: false

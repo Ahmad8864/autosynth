@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autodata"
+version = "0.1.0"
+description = "Agentic synthetic-data generation framework inspired by Meta FAIR's Autodata / Agentic Self-Instruct."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "autodata contributors" }]
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "loguru>=0.7",
+    "tenacity>=8.2",
+    "litellm>=1.40",
+]
+
+[project.optional-dependencies]
+hf = ["datasets>=2.18", "pyarrow>=15"]
+dev = ["pytest>=8", "pytest-mock>=3.12", "ruff>=0.4"]
+
+[project.scripts]
+autodata = "autodata.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning"]

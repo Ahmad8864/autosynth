@@ -1,0 +1,34 @@
+# Real-provider example: math word problems.
+# Demonstrates a non-document domain.
+
+output_dir: outputs
+max_examples: 10
+
+domain:
+  name: math_word_problems
+  params:
+    topics:
+      - { topic: linear systems, difficulty: high-school }
+      - { topic: modular arithmetic, difficulty: competition }
+      - { topic: probability with conditional events, difficulty: high-school }
+
+loop:
+  max_rounds: 4
+  weak_samples: 3
+  strong_samples: 3
+  stop_on_first_accept: true
+
+acceptance:
+  weak_avg_max: 0.60
+  weak_max_max: 0.80
+  forbid_weak_zero: false  # math solvers sometimes nail it by luck or fail entirely
+  strong_avg_min: 0.70
+  strong_avg_max: 0.98
+  min_gap: 0.25
+
+# Mix providers freely
+orchestrator:  { provider_model: openai/gpt-4o-mini,                temperature: 0.2 }
+challenger:    { provider_model: anthropic/claude-haiku-4-5,        temperature: 0.9 }
+weak_solver:   { provider_model: together_ai/meta-llama/Llama-3.2-3B-Instruct, temperature: 0.6 }
+strong_solver: { provider_model: openai/gpt-4o,                     temperature: 0.2 }
+judge:         { provider_model: anthropic/claude-haiku-4-5,        temperature: 0.0 }
