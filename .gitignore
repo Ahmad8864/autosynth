@@ -1,8 +1,30 @@
+# Environments
 .venv/
+venv/
+env/
+
+# Python bytecode
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Packaging
 *.egg-info/
+build/
+dist/
+
+# Test, lint, and coverage
 .pytest_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Project outputs
 outputs/
+
+# OS files
 .DS_Store
+
+# Lock files
 uv.lock
