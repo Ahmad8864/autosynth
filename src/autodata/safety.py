@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 # Very rough PII heuristics — intentionally conservative; meant as a starting
 # point, not a compliance solution. Override with a real DLP tool in production.
@@ -71,4 +73,11 @@ def load_filter(spec: str | None) -> SafetyFilter:
         raise AttributeError(f"safety filter {attr!r} not found in {target!r}")
     if not callable(fn):
         raise TypeError(f"safety filter {spec!r} is not callable")
-    return fn
+    try:
+        inspect.signature(fn).bind("")
+    except TypeError as e:
+        raise TypeError(
+            f"safety filter {spec!r} must accept one positional str argument: {e}"
+        ) from e
+    # Signature accepts (str); return value still trusted at first call.
+    return cast(SafetyFilter, fn)

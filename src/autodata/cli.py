@@ -12,6 +12,7 @@ Commands:
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -44,10 +45,12 @@ def _configure_logging(verbose: bool) -> None:
     )
 
 
-def _open_run(run_dir: Path) -> tuple[Store, str]:
-    """Open the run.db at ``run_dir`` and return (store, run_id).
+def _open_run(run_dir: Path) -> tuple[Store, sqlite3.Row]:
+    """Open the run.db at ``run_dir`` and return (store, run_row).
 
-    Exits with code 1 if the database or its run row is missing.
+    Exits with code 1 if the database or its run row is missing. Returning
+    the row directly lets callers use ``row["run_id"]`` / ``row["status"]``
+    without re-querying or re-narrowing past ``Row | None``.
     """
     db = run_dir / "run.db"
     if not db.exists():
@@ -58,7 +61,7 @@ def _open_run(run_dir: Path) -> tuple[Store, str]:
     if row is None:
         console.print("[red]no run row in this database[/red]")
         raise typer.Exit(1)
-    return store, row["run_id"]
+    return store, row
 
 
 @app.command("run")
@@ -140,8 +143,8 @@ def inspect_run_cmd(
     stuck: bool = typer.Option(False, "--stuck", help="Show only non-terminal items"),
 ):
     """Show per-item state, counts, and last error from the run.db."""
-    store, run_id = _open_run(run_dir)
-    run_row = store.get_run(run_id)
+    store, run_row = _open_run(run_dir)
+    run_id = run_row["run_id"]
     counts = store.items_terminal_counts(run_id)
     console.print(f"[bold]run:[/bold] {run_id}  [dim](status: {run_row['status']})[/dim]")
     console.print(f"[bold]cost:[/bold] ${store.cost_so_far(run_id):.4f}")
@@ -170,7 +173,8 @@ def export_cmd(
     out: Path | None = typer.Option(None, "--out", "-o"),
 ):
     """Export the accepted dataset from a run's run.db."""
-    store, run_id = _open_run(run)
+    store, run_row = _open_run(run)
+    run_id = run_row["run_id"]
     if format == "jsonl":
         target = out or (run / "accepted.jsonl")
         n = store.export_jsonl(run_id, target)
@@ -220,8 +224,8 @@ def resume_cmd(
 @app.command("status")
 def status_cmd(run_dir: Path = typer.Argument(..., exists=True)):
     """One-line status: state counts + cost."""
-    store, run_id = _open_run(run_dir)
-    run_row = store.get_run(run_id)
+    store, run_row = _open_run(run_dir)
+    run_id = run_row["run_id"]
     counts = store.items_terminal_counts(run_id)
     console.print(
         f"{run_id}  status={run_row['status']}  "
