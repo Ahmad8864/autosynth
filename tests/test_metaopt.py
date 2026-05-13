@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from autodata.config import (
+from autosynth.config import (
     AcceptanceConfig,
     DomainConfig,
     LoopConfig,
@@ -16,8 +16,8 @@ from autodata.config import (
     ModelConfig,
     RunConfig,
 )
-from autodata.harness import make_harness
-from autodata.metaopt import (
+from autosynth.harness import make_harness
+from autosynth.metaopt import (
     HarnessRecord,
     MetaOptimizer,
     apply_mutation,

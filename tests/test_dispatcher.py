@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from autodata.config import (
+from autosynth.config import (
     AcceptanceConfig,
     DispatcherConfig,
     DomainConfig,
@@ -20,13 +20,13 @@ from autodata.config import (
     ModelConfig,
     RunConfig,
 )
-from autodata.dispatcher import Dispatcher
-from autodata.domain import GroundingItem
-from autodata.domains.qa_from_documents import QAFromDocuments
-from autodata.harness import DEFAULT_HARNESS
-from autodata.llm import LLMClient, register_mock
-from autodata.pipeline import State
-from autodata.store import Store
+from autosynth.dispatcher import Dispatcher
+from autosynth.domain import GroundingItem
+from autosynth.domains.qa_from_documents import QAFromDocuments
+from autosynth.harness import DEFAULT_HARNESS
+from autosynth.llm import LLMClient, register_mock
+from autosynth.pipeline import State
+from autosynth.store import Store
 
 # ---------------------------------------------------------------------------
 # fixtures + mock scenarios
@@ -92,7 +92,7 @@ def _seed_run(store: Store, cfg: RunConfig, docs_dir: Path) -> tuple[Dispatcher,
 
 # Mock scenario: deterministic accept path.
 def _disp_happy(role: str, messages):
-    from autodata.llm.mock import _canonical_role, _join_messages
+    from autosynth.llm.mock import _canonical_role, _join_messages
 
     all_text = _join_messages(messages)
     canon = _canonical_role(role, all_text)
@@ -274,7 +274,7 @@ def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
     one = store.claim_pending(limit=1)
     if one:
         # Mark it done with a fake response so we have at least partial state.
-        from autodata.llm import LLMRequest
+        from autosynth.llm import LLMRequest
 
         req = one[0]
         request = LLMRequest(

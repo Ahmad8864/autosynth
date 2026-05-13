@@ -1,6 +1,6 @@
-from autodata.config import AcceptanceConfig
-from autodata.evaluator import evaluate
-from autodata.schemas import QualityCheck, SolverScore
+from autosynth.config import AcceptanceConfig
+from autosynth.evaluator import evaluate
+from autosynth.schemas import QualityCheck, SolverScore
 
 
 def _score(solver: str, vals: list[float]) -> list[SolverScore]:

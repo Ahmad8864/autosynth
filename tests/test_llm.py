@@ -1,4 +1,4 @@
-"""Tests for the new event-sourced LLMClient (autodata.llm).
+"""Tests for the new event-sourced LLMClient (autosynth.llm).
 
 Covers: token-bucket math, rate-limit glob matching, mock dispatch
 preserves the legacy register_mock contract, cost accounting delegated
@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from autodata.llm import (
+from autosynth.llm import (
     LLMClient,
     LLMConfig,
     LLMRequest,

@@ -31,17 +31,17 @@ Both run in CI. Config is in `pyproject.toml`.
 - Add a test for the thing you changed. Bug fixes get the test that would've caught the bug.
 - Don't add new core dependencies. The mock demo needs to keep working offline. Heavy stuff goes under an optional extra.
 - Keep the core domain-agnostic. Domain-specific code goes in a `DomainAdapter`, not in `orchestrator.py` / `evaluator.py` / `writer.py`.
-- New public symbols go in `src/autodata/__init__.py` with a one-line docstring.
+- New public symbols go in `src/autosynth/__init__.py` with a one-line docstring.
 
 ## Adding a domain
 
 Scaffold one and fill it in:
 
 ```bash
-uv run autodata init-domain my_domain --out my_domain.py
+uv run autosynth init-domain my_domain --out my_domain.py
 ```
 
-Implement the six abstract methods, then point your YAML config at the file (see the README). `src/autodata/domains/qa_from_documents.py` and `math_word_problems.py` are good references.
+Implement the six abstract methods, then point your YAML config at the file (see the README). `src/autosynth/domains/qa_from_documents.py` and `math_word_problems.py` are good references.
 
 ## Bugs and questions
 
@@ -50,7 +50,7 @@ Open a GitHub issue. Helpful things to include:
 - Your config (redact secrets)
 - `summary.json` from the failing run
 - A trajectory file from `outputs/<run_id>/trajectories/` if it's relevant
-- Python version and `uv pip freeze | grep -E 'autodata|litellm|pydantic'`
+- Python version and `uv pip freeze | grep -E 'autosynth|litellm|pydantic'`
 
 ## License
 

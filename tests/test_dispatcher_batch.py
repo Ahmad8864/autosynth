@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from autodata.config import (
+from autosynth.config import (
     AcceptanceConfig,
     DispatcherConfig,
     DomainConfig,
@@ -18,7 +18,7 @@ from autodata.config import (
     ModelConfig,
     RunConfig,
 )
-from autodata.dispatcher import (
+from autosynth.dispatcher import (
     BatchHandle,
     BatchResult,
     Dispatcher,
@@ -26,12 +26,12 @@ from autodata.dispatcher import (
     make_fulfill_batch,
     poll_outstanding_batches,
 )
-from autodata.domain import GroundingItem
-from autodata.domains.qa_from_documents import QAFromDocuments
-from autodata.harness import DEFAULT_HARNESS
-from autodata.llm import LLMClient
-from autodata.pipeline import State
-from autodata.store import Store
+from autosynth.domain import GroundingItem
+from autosynth.domains.qa_from_documents import QAFromDocuments
+from autosynth.harness import DEFAULT_HARNESS
+from autosynth.llm import LLMClient
+from autosynth.pipeline import State
+from autosynth.store import Store
 
 
 @pytest.fixture
@@ -94,7 +94,7 @@ def _make_dispatcher(store, docs_dir, tmp_path, provider) -> Dispatcher:
 
 def test_mock_batch_provider_submit_complete_fetch():
     p = MockBatchProvider(ready_after_polls=2)
-    from autodata.llm import LLMRequest
+    from autosynth.llm import LLMRequest
 
     req = LLMRequest(
         request_id="x",

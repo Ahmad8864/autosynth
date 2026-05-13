@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from autodata.schemas import Candidate, EvalReport, QualityCheck, RubricCriterion, SolverScore
-from autodata.store import (
+from autosynth.schemas import Candidate, EvalReport, QualityCheck, RubricCriterion, SolverScore
+from autosynth.store import (
     REQ_DONE,
     REQ_FAILED,
     REQ_IN_FLIGHT,

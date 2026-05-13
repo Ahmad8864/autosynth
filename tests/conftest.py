@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from autodata.llm import register_mock
+from autosynth.llm import register_mock
 
 
 @pytest.fixture

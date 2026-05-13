@@ -3,13 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "autodata"
+name = "autosynth"
 dynamic = ["version"]
 description = "Agentic synthetic-data generation framework inspired by Meta FAIR's Autodata / Agentic Self-Instruct."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "autodata contributors" }]
+authors = [{ name = "autosynth contributors" }]
 keywords = [
     "synthetic-data",
     "llm",
@@ -45,20 +45,20 @@ hf = ["datasets>=2.18", "pyarrow>=15"]
 dev = ["pytest>=8", "pytest-mock>=3.12", "ruff>=0.4"]
 
 [project.urls]
-Repository = "https://github.com/abmahmoud03/autodata"
-Issues = "https://github.com/abmahmoud03/autodata/issues"
+Repository = "https://github.com/Ahmad8864/autosynth"
+Issues = "https://github.com/Ahmad8864/autosynth/issues"
 
 [project.scripts]
-autodata = "autodata.cli:app"
+autosynth = "autosynth.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"autodata" = ["templates/*.tmpl"]
+"autosynth" = ["templates/*.tmpl"]
 
 [tool.setuptools.dynamic]
-version = { attr = "autodata.__version__" }
+version = { attr = "autosynth.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,4 +1,4 @@
-from autodata.harness import DEFAULT_HARNESS, apply_harness, make_harness
+from autosynth.harness import DEFAULT_HARNESS, apply_harness, make_harness
 
 
 def test_default_harness_has_seed_rules():

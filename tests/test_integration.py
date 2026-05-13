@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from autodata.config import (
+from autosynth.config import (
     AcceptanceConfig,
     DispatcherConfig,
     DomainConfig,
@@ -18,8 +18,8 @@ from autodata.config import (
     ModelConfig,
     RunConfig,
 )
-from autodata.runner import Runner, _build_llm_config
-from autodata.store import Store
+from autosynth.runner import Runner, _build_llm_config
+from autosynth.store import Store
 
 
 def _cfg(docs_dir: Path, output_dir: Path, scenario: str, *, forbid_weak_zero: bool = False) -> RunConfig:

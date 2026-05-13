@@ -13,24 +13,24 @@ from pathlib import Path
 
 import pytest
 
-from autodata.config import (
+from autosynth.config import (
     AcceptanceConfig,
     DomainConfig,
     LoopConfig,
     ModelConfig,
     RunConfig,
 )
-from autodata.domain import GroundingItem
-from autodata.domains.qa_from_documents import QAFromDocuments
-from autodata.harness import DEFAULT_HARNESS
-from autodata.pipeline import (
+from autosynth.domain import GroundingItem
+from autosynth.domains.qa_from_documents import QAFromDocuments
+from autosynth.harness import DEFAULT_HARNESS
+from autosynth.pipeline import (
     ItemState,
     State,
     StepResponse,
     step,
 )
-from autodata.safety import SafetyVerdict
-from autodata.utils import stable_id
+from autosynth.safety import SafetyVerdict
+from autosynth.utils import stable_id
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -512,7 +512,7 @@ def test_responses_for_other_rounds_are_ignored(domain, grounding):
 
 
 def _make_candidate(source_id: str):
-    from autodata.schemas import Candidate, RubricCriterion
+    from autosynth.schemas import Candidate, RubricCriterion
 
     return Candidate(
         candidate_id="c1",
@@ -528,6 +528,6 @@ def _make_candidate(source_id: str):
 
 
 def _pass_quality():
-    from autodata.schemas import QualityCheck
+    from autosynth.schemas import QualityCheck
 
     return QualityCheck(passed=True, failures=[], notes="ok")

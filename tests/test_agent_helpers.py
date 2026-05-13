@@ -6,11 +6,11 @@ import json
 
 import pytest
 
-from autodata.agents import challenger, reflector, solver, verifier
-from autodata.config import AcceptanceConfig
-from autodata.domains.qa_from_documents import QAFromDocuments
-from autodata.harness import make_harness
-from autodata.schemas import (
+from autosynth.agents import challenger, reflector, solver, verifier
+from autosynth.config import AcceptanceConfig
+from autosynth.domains.qa_from_documents import QAFromDocuments
+from autosynth.harness import make_harness
+from autosynth.schemas import (
     Candidate,
     EvalReport,
     QualityCheck,

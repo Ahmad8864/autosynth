@@ -1,4 +1,4 @@
-from autodata.schemas import (
+from autosynth.schemas import (
     Candidate,
     EvalReport,
     QualityCheck,
@@ -33,7 +33,7 @@ def test_candidate_roundtrip():
 
 
 def test_trajectory_accepted_round_lookup():
-    from autodata.schemas import Round
+    from autosynth.schemas import Round
 
     cand = Candidate(
         candidate_id="x",

@@ -1,4 +1,4 @@
-# autodata
+# autosynth
 
 Generate synthetic datasets with an LLM loop that proposes, audits, solves, and judges its own work. Inspired by Meta FAIR's [Autodata / Agentic Self-Instruct][paper] paper, but rewritten to be domain-agnostic: every domain-specific piece lives in a small Python plugin, and the runtime is the same regardless of whether you're generating math word problems, support-ticket triage data, or QA pairs from your own docs.
 
@@ -22,9 +22,9 @@ Python 3.10+. Either activate the venv (`source .venv/bin/activate`) or prefix c
 ## Quick start (no API keys)
 
 ```bash
-uv run autodata run --config configs/mock_demo.yaml
-uv run autodata status outputs/mock-demo
-uv run autodata export --run outputs/mock-demo --format jsonl
+uv run autosynth run --config configs/mock_demo.yaml
+uv run autosynth status outputs/mock-demo
+uv run autosynth export --run outputs/mock-demo --format jsonl
 ```
 
 The mock demo uses an in-process scripted "provider" and finishes in about a second. It writes `outputs/mock-demo/run.db` plus a frozen config snapshot. The `export` step is opt-in — the SQLite database is the source of truth.
@@ -55,7 +55,7 @@ See `configs/example_qa.yaml` and `configs/example_math.yaml` for full real-prov
 
 ## How it works
 
-For each source item, autodata runs the same five-step loop until the candidate is accepted or `loop.max_rounds` is exhausted:
+For each source item, autosynth runs the same five-step loop until the candidate is accepted or `loop.max_rounds` is exhausted:
 
 1. **Challenger** proposes a candidate `(input, reference_output, rubric)`.
 2. **Quality** audits the candidate for obvious problems.
@@ -87,18 +87,18 @@ llm                    provider routing, rate-limit, retry, cost accounting
 
 Item states: `PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES` with `NEED_REFLECTION` on the reject branch and `ACCEPTED` / `REJECTED` as terminals. `NEED_SCORES` fans out `N × weak + N × strong` solver requests in parallel; each judge fires the moment its solver lands. Concurrency is bounded by `cfg.dispatcher.concurrency`.
 
-The fact that `step()` is pure is the only reason resume works. Kill the process at any point — including mid-batch — and `autodata resume` picks up exactly where it left off. In-flight local requests revert to pending; in-flight batch requests stay tagged and get polled.
+The fact that `step()` is pure is the only reason resume works. Kill the process at any point — including mid-batch — and `autosynth resume` picks up exactly where it left off. In-flight local requests revert to pending; in-flight batch requests stay tagged and get polled.
 
 ## CLI
 
 ```
-autodata run --config CONFIG.yaml [--run-id ID] [--resume RUN_ID] [-v]
-autodata resume RUN_DIR
-autodata status RUN_DIR
-autodata inspect-run RUN_DIR [--stuck]
-autodata export --run RUN_DIR --format jsonl|hf [--out PATH]
-autodata metaopt --config CONFIG.yaml
-autodata init-domain NAME --out my_domain.py
+autosynth run --config CONFIG.yaml [--run-id ID] [--resume RUN_ID] [-v]
+autosynth resume RUN_DIR
+autosynth status RUN_DIR
+autosynth inspect-run RUN_DIR [--stuck]
+autosynth export --run RUN_DIR --format jsonl|hf [--out PATH]
+autosynth metaopt --config CONFIG.yaml
+autosynth init-domain NAME --out my_domain.py
 ```
 
 `status` is the one-liner; `inspect-run` is the detailed per-item table. `--stuck` filters to items that haven't reached a terminal state, which is what you want when something looks wrong.
@@ -109,7 +109,7 @@ Everything for a run lives under `outputs/<run_id>/`:
 
 - `run.db` — SQLite. Tables: `runs`, `items`, `rounds`, `requests`, `responses`, `solver_scores`, `accepted`. Queryable with the `sqlite3` CLI and safe to share.
 - `config.snapshot.yaml` — the exact config used. Resume reads this if you don't pass `--config`.
-- `accepted.jsonl` / `hf_export/` — produced on `autodata export`, not written automatically.
+- `accepted.jsonl` / `hf_export/` — produced on `autosynth export`, not written automatically.
 
 Each accepted record contains `input`, `reference_output`, `rubric`, `domain`, `source_id`, `metadata`, the weak/strong/gap scores, per-attempt solver scores, and the acceptance rationale.
 
@@ -118,7 +118,7 @@ Each accepted record contains `input`, `reference_output`, `rubric`, `domain`, `
 A domain plugin is one class subclassing `DomainAdapter` with six methods. Scaffold one with:
 
 ```bash
-uv run autodata init-domain customer_support -o my_domain.py
+uv run autosynth init-domain customer_support -o my_domain.py
 ```
 
 Fill in `load_grounding`, `generation_prompt`, `validate_candidate`, `solver_prompt`, `quality_prompt`, and `judge_prompt`, then point your config at it:
@@ -130,11 +130,11 @@ domain:
     source_csv: ./tickets.csv
 ```
 
-The two bundled domains (`src/autodata/domains/qa_from_documents.py`, `src/autodata/domains/math_word_problems.py`) are short and worth reading before you write your own.
+The two bundled domains (`src/autosynth/domains/qa_from_documents.py`, `src/autosynth/domains/math_word_problems.py`) are short and worth reading before you write your own.
 
 ## Meta-optimization
 
-`autodata metaopt --config CONFIG.yaml` runs the paper's secondary loop: evolve the orchestrator's *prompts* over generations. The unit of evolution is a `HarnessSpec` — a structured bag of rule strings that get injected into each agent's system prompt, plus a couple of numeric knobs.
+`autosynth metaopt --config CONFIG.yaml` runs the paper's secondary loop: evolve the orchestrator's *prompts* over generations. The unit of evolution is a `HarnessSpec` — a structured bag of rule strings that get injected into each agent's system prompt, plus a couple of numeric knobs.
 
 The loop, roughly:
 
@@ -147,7 +147,7 @@ Mutations operate on the harness, not on Python source. That preserves the main 
 Try it without keys:
 
 ```bash
-uv run autodata metaopt --config configs/metaopt_mock.yaml
+uv run autosynth metaopt --config configs/metaopt_mock.yaml
 ```
 
 The mock scenario seeds at 0% accept, the mutator proposes a source-specificity rule on iteration 1 that lifts both train and val to 100%, that mutation is accepted, and subsequent iterations get deduplicated. Population, lineage, and per-iteration decisions are written under `outputs/metaopt/<run_id>/iterations/`.

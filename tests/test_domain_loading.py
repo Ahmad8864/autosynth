@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from autodata.domain import build_domain, get_domain_class, load_domain_from_path
+from autosynth.domain import build_domain, get_domain_class, load_domain_from_path
 
 
 def test_get_registered():
@@ -18,7 +18,7 @@ def test_unknown_raises():
 def test_load_from_path(tmp_path: Path):
     src = tmp_path / "tiny.py"
     src.write_text(
-        "from autodata.domain import DomainAdapter\n"
+        "from autosynth.domain import DomainAdapter\n"
         "class Tiny(DomainAdapter):\n"
         "    def load_grounding(self): return []\n"
         "    def generation_prompt(self, *a, **k): return []\n"
