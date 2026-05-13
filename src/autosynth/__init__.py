@@ -1,6 +1,9 @@
 """Autosynth: agentic synthetic-data generation framework."""
 
-__version__ = "0.1.0"
+try:
+    from autosynth._version import __version__
+except ImportError:
+    __version__ = "0.0.0+unknown"
 
 from autosynth.config import (
     AcceptanceConfig,

@@ -32,3 +32,6 @@ outputs/
 
 # Lock files
 uv.lock
+
+# setuptools-scm generated version file
+src/autosynth/_version.py

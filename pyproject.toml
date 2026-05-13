@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77", "wheel"]
+requires = ["setuptools>=77", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -57,8 +57,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 "autosynth" = ["templates/*.tmpl"]
 
-[tool.setuptools.dynamic]
-version = { attr = "autosynth.__version__" }
+[tool.setuptools_scm]
+version_file = "src/autosynth/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
