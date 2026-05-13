@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-12
+
+Release-infrastructure and tooling pass. No user-facing functional changes.
+
+### Added
+
+- README badges: PyPI version, CI status, Python versions, license.
+- Trusted-publisher release workflow on `v*` tags (PyPI publish via OIDC, no long-lived tokens).
+- Pre-commit hooks (ruff, gitleaks, file hygiene) enforced locally and in CI.
+
+### Changed
+
+- License metadata switched to PEP 639 SPDX form (`license = "MIT"` + `license-files`).
+- Version is now derived from git tags via `setuptools-scm` (no more hand-bumping `__version__`).
+- Author field set in PyPI metadata.
+
 ## [0.1.0] - 2026-05-12
 
 Initial release.
@@ -18,5 +34,6 @@ Initial release.
 - LiteLLM-based real provider routing with per-role configuration.
 - CLI: `run`, `resume`, `status`, `inspect-run`, `export`, `metaopt`, `init-domain`.
 
-[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Ahmad8864/autosynth/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Ahmad8864/autosynth/releases/tag/v0.1.0
