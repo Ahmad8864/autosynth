@@ -16,13 +16,13 @@ The headline trick: for each candidate datapoint, run a *weak* solver and a *str
 ## Install
 
 ```bash
-uv venv
-uv pip install -e .             # core
-uv pip install -e ".[dev]"      # + pytest, ruff
-uv pip install -e ".[hf]"       # + Hugging Face export
+uv pip install autosynth             # core
+uv pip install "autosynth[hf]"       # + Hugging Face export
 ```
 
-Python 3.10+. Either activate the venv (`source .venv/bin/activate`) or prefix commands with `uv run`.
+Python 3.10+. Plain `pip install autosynth` works too.
+
+For a from-source / editable install for development, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quick start (no API keys)
 
