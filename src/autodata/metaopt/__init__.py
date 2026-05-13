@@ -10,6 +10,7 @@ Mutations operate on `HarnessSpec` (text rules + a few numeric knobs), not on
 Python source. The expressive scope for prompt edits is preserved; the safety
 profile is dramatically smaller than letting an LLM rewrite the repo.
 """
+
 from __future__ import annotations
 
 from autodata.metaopt.evaluation import aggregate_failures_from_db, evaluate_harness

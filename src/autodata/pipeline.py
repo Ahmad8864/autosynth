@@ -14,6 +14,7 @@ States (5 + 2 terminal)::
 Sync work (structural validation, safety filter, acceptance evaluation)
 happens *inside* the response handler for the preceding async state.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -61,7 +62,7 @@ class StepResponse:
     text: str
     parent_response_id: str | None = None
     solver_response_text: str | None = None  # judge only
-    solver_role: str | None = None           # judge only
+    solver_role: str | None = None  # judge only
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ class ItemState:
     source_id: str
     domain: str
     state: State
-    current_round: int                              # 1-indexed
+    current_round: int  # 1-indexed
     rounds_history: tuple[Round, ...] = ()
     candidate: Candidate | None = None
     quality: QualityCheck | None = None
@@ -202,16 +203,26 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
         )
     except ValueError as e:
         return _go_to_reflection_or_reject(
-            item, cfg, harness, domain, grounding,
+            item,
+            cfg,
+            harness,
+            domain,
+            grounding,
             failure_quality=QualityCheck(passed=False, failures=[f"challenger_parse_error:{e}"]),
         )
 
     struct_errs = domain.validate_candidate(candidate)
     if struct_errs:
         return _go_to_reflection_or_reject(
-            replace(item, candidate=candidate), cfg, harness, domain, grounding,
+            replace(item, candidate=candidate),
+            cfg,
+            harness,
+            domain,
+            grounding,
             failure_quality=QualityCheck(
-                passed=False, failures=struct_errs, notes="structural validation failed",
+                passed=False,
+                failures=struct_errs,
+                notes="structural validation failed",
             ),
         )
 
@@ -219,7 +230,11 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
         verdict = safety_filter(_payload_text(candidate.payload))
         if not verdict.allowed:
             return _go_to_reflection_or_reject(
-                replace(item, candidate=candidate), cfg, harness, domain, grounding,
+                replace(item, candidate=candidate),
+                cfg,
+                harness,
+                domain,
+                grounding,
                 failure_quality=QualityCheck(
                     passed=False,
                     failures=[f"safety:{r}" for r in verdict.reasons],
@@ -228,9 +243,12 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
             )
 
     qreq = verifier_agent.build_quality_request(
-        item_id=item.item_id, round_n=item.current_round,
+        item_id=item.item_id,
+        round_n=item.current_round,
         **_dispatch_kwargs(cfg, "quality"),
-        candidate=candidate, domain=domain, harness=harness,
+        candidate=candidate,
+        domain=domain,
+        harness=harness,
     )
     new_state = replace(item, state=State.NEED_QUALITY, candidate=candidate)
     return StepResult(state=new_state, new_requests=(qreq,))
@@ -244,14 +262,22 @@ def _on_quality(item, relevant, cfg, harness, domain, grounding) -> StepResult:
     quality = verifier_agent.parse_quality(resp.text)
     if not quality.passed:
         return _go_to_reflection_or_reject(
-            replace(item, quality=quality), cfg, harness, domain, grounding,
+            replace(item, quality=quality),
+            cfg,
+            harness,
+            domain,
+            grounding,
             failure_quality=quality,
         )
 
     reqs = tuple(_build_solver_requests(item, cfg, harness, domain))
     new_state = replace(
-        item, state=State.NEED_SCORES, quality=quality,
-        weak_scores=(), strong_scores=(), judge_response_for_solver={},
+        item,
+        state=State.NEED_SCORES,
+        quality=quality,
+        weak_scores=(),
+        strong_scores=(),
+        judge_response_for_solver={},
     )
     return StepResult(state=new_state, new_requests=reqs)
 
@@ -260,18 +286,23 @@ def _build_solver_requests(item, cfg, harness, domain):
     for role, n in (("weak", cfg.loop.weak_samples), ("strong", cfg.loop.strong_samples)):
         for k in range(n):
             yield solver_agent.build_request(
-                item_id=item.item_id, round_n=item.current_round, attempt=k,
+                item_id=item.item_id,
+                round_n=item.current_round,
+                attempt=k,
                 **_dispatch_kwargs(cfg, role),
-                candidate=item.candidate, role=role, domain=domain, harness=harness,
+                candidate=item.candidate,
+                role=role,
+                domain=domain,
+                harness=harness,
             )
 
 
 def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
     """Two kinds of responses come through here:
 
-      - solver response → emit a judge request (no state change)
-      - judge response  → record a SolverScore (no state change *unless*
-                          all 2N scores are in, in which case we evaluate)
+    - solver response → emit a judge request (no state change)
+    - judge response  → record a SolverScore (no state change *unless*
+                        all 2N scores are in, in which case we evaluate)
     """
     judge_requests = _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain)
     scores = _ingest_judge_responses(item, relevant)
@@ -294,8 +325,12 @@ def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
         )
 
     return _finalize_scored_round(
-        item, cfg, harness, domain,
-        scores=scores, judge_requests=judge_requests,
+        item,
+        cfg,
+        harness,
+        domain,
+        scores=scores,
+        judge_requests=judge_requests,
     )
 
 
@@ -304,13 +339,20 @@ def _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain) -> list[L
     for r in relevant:
         if r.role not in ("weak", "strong"):
             continue
-        out.append(verifier_agent.build_judge_request(
-            item_id=item.item_id, round_n=item.current_round, attempt=r.attempt,
-            **_dispatch_kwargs(cfg, "judge"),
-            candidate=item.candidate, solver_response=r.text,
-            solver_role=r.role, domain=domain, harness=harness,
-            parent_response_id=r.request_id,
-        ))
+        out.append(
+            verifier_agent.build_judge_request(
+                item_id=item.item_id,
+                round_n=item.current_round,
+                attempt=r.attempt,
+                **_dispatch_kwargs(cfg, "judge"),
+                candidate=item.candidate,
+                solver_response=r.text,
+                solver_role=r.role,
+                domain=domain,
+                harness=harness,
+                parent_response_id=r.request_id,
+            )
+        )
     return out
 
 
@@ -324,17 +366,22 @@ def _ingest_judge_responses(item, relevant):
         if r.role != "judge" or item.candidate is None or r.solver_role is None:
             continue
         score = verifier_agent.parse_judge(
-            r.text, candidate=item.candidate, solver_role=r.solver_role,
-            attempt=r.attempt, solver_response_text=r.solver_response_text or "",
+            r.text,
+            candidate=item.candidate,
+            solver_role=r.solver_role,
+            attempt=r.attempt,
+            solver_response_text=r.solver_response_text or "",
         )
         (new_weak if r.solver_role == "weak" else new_strong).append(score)
         if r.parent_response_id is not None:
             judge_for_solver[r.parent_response_id] = r.request_id
-            new_scores.append(ScoreRecord(
-                score=score,
-                solver_response_id=r.parent_response_id,
-                judge_response_id=r.request_id,
-            ))
+            new_scores.append(
+                ScoreRecord(
+                    score=score,
+                    solver_response_id=r.parent_response_id,
+                    judge_response_id=r.request_id,
+                )
+            )
     return ScoreIngestion(
         weak_scores=tuple(new_weak),
         strong_scores=tuple(new_strong),
@@ -344,8 +391,13 @@ def _ingest_judge_responses(item, relevant):
 
 
 def _finalize_scored_round(
-    item, cfg, harness, domain,
-    *, scores: ScoreIngestion, judge_requests,
+    item,
+    cfg,
+    harness,
+    domain,
+    *,
+    scores: ScoreIngestion,
+    judge_requests,
 ) -> StepResult:
     evaluation = evaluate(scores.weak_scores, scores.strong_scores, item.quality, cfg.acceptance)
     round_obj = Round(
@@ -366,32 +418,42 @@ def _finalize_scored_round(
     if evaluation.accepted:
         new_state = replace(item, state=State.ACCEPTED, **common)
         return StepResult(
-            state=new_state, new_requests=tuple(judge_requests),
-            completed_round=round_obj, scores_to_persist=scores.records,
+            state=new_state,
+            new_requests=tuple(judge_requests),
+            completed_round=round_obj,
+            scores_to_persist=scores.records,
         )
 
     if item.current_round < cfg.loop.max_rounds:
         rreq = reflector_agent.build_request(
-            item_id=item.item_id, round_n=item.current_round,
+            item_id=item.item_id,
+            round_n=item.current_round,
             **_dispatch_kwargs(cfg, "reflector"),
             prior_rounds=list(rounds_history),
-            domain_name=domain.name, leakage_rules=domain.leakage_rules(),
-            acceptance=cfg.acceptance, harness=harness,
+            domain_name=domain.name,
+            leakage_rules=domain.leakage_rules(),
+            acceptance=cfg.acceptance,
+            harness=harness,
         )
         new_state = replace(item, state=State.NEED_REFLECTION, **common)
         return StepResult(
-            state=new_state, new_requests=tuple(judge_requests) + (rreq,),
-            completed_round=round_obj, scores_to_persist=scores.records,
+            state=new_state,
+            new_requests=tuple(judge_requests) + (rreq,),
+            completed_round=round_obj,
+            scores_to_persist=scores.records,
         )
 
     new_state = replace(
-        item, state=State.REJECTED,
+        item,
+        state=State.REJECTED,
         rejection_reasons=tuple(evaluation.rejection_reasons),
         **common,
     )
     return StepResult(
-        state=new_state, new_requests=tuple(judge_requests),
-        completed_round=round_obj, scores_to_persist=scores.records,
+        state=new_state,
+        new_requests=tuple(judge_requests),
+        completed_round=round_obj,
+        scores_to_persist=scores.records,
     )
 
 
@@ -424,12 +486,22 @@ def _find_role(responses: list[StepResponse], role: str) -> StepResponse | None:
 
 
 def _go_to_reflection_or_reject(
-    item, cfg, harness, domain, grounding, *, failure_quality: QualityCheck,
+    item,
+    cfg,
+    harness,
+    domain,
+    grounding,
+    *,
+    failure_quality: QualityCheck,
 ) -> StepResult:
     """Unified rejection path: emit reflector or terminate REJECTED."""
     cand = item.candidate or Candidate(
-        candidate_id="invalid", domain=item.domain, source_id=item.source_id,
-        payload={}, rubric=[], reference_output=None,
+        candidate_id="invalid",
+        domain=item.domain,
+        source_id=item.source_id,
+        payload={},
+        rubric=[],
+        reference_output=None,
     )
     round_obj = Round(
         refinement_round=item.current_round,
@@ -442,20 +514,27 @@ def _go_to_reflection_or_reject(
     rounds_history = item.rounds_history + (round_obj,)
     if item.current_round < cfg.loop.max_rounds:
         rreq = reflector_agent.build_request(
-            item_id=item.item_id, round_n=item.current_round,
+            item_id=item.item_id,
+            round_n=item.current_round,
             **_dispatch_kwargs(cfg, "reflector"),
             prior_rounds=list(rounds_history),
-            domain_name=domain.name, leakage_rules=domain.leakage_rules(),
-            acceptance=cfg.acceptance, harness=harness,
+            domain_name=domain.name,
+            leakage_rules=domain.leakage_rules(),
+            acceptance=cfg.acceptance,
+            harness=harness,
         )
         new_state = replace(
-            item, state=State.NEED_REFLECTION,
-            quality=failure_quality, rounds_history=rounds_history,
+            item,
+            state=State.NEED_REFLECTION,
+            quality=failure_quality,
+            rounds_history=rounds_history,
         )
         return StepResult(state=new_state, new_requests=(rreq,), completed_round=round_obj)
 
     new_state = replace(
-        item, state=State.REJECTED, quality=failure_quality,
+        item,
+        state=State.REJECTED,
+        quality=failure_quality,
         rounds_history=rounds_history,
         rejection_reasons=tuple(failure_quality.failures or ["unspecified"]),
     )

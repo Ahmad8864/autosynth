@@ -6,6 +6,7 @@ model string. Two scenarios ship by default:
   - ``mock/scripted`` / ``mock/default`` — a realistic generation→accept trajectory
   - ``mock/metaopt`` — used by the meta-optimization demo and tests
 """
+
 from __future__ import annotations
 
 import json
@@ -79,7 +80,8 @@ class _MockRegistry:
         if handler is None:
             if scenario not in ("default", "scripted"):
                 logger.warning(
-                    "mock scenario {!r} not registered; falling back to 'default'", scenario,
+                    "mock scenario {!r} not registered; falling back to 'default'",
+                    scenario,
                 )
             handler = self._handlers.get("default") or _default_mock_handler
         return handler(role, messages)
@@ -101,6 +103,7 @@ def dispatch_mock(provider_model: str, role: str, messages: list[Message]) -> st
 # Default mock scenarios
 # ---------------------------------------------------------------------------
 
+
 def _default_mock_handler(role: str, messages: list[Message]) -> str:
     """Built-in mock simulating a realistic generation→accept trajectory."""
     all_text = _join_messages(messages)
@@ -108,42 +111,50 @@ def _default_mock_handler(role: str, messages: list[Message]) -> str:
 
     if canon == "challenger":
         round_n = _peek_round(all_text)
-        return json.dumps({
-            "payload": {
-                "question": f"What is the main contribution of the source, as understood at round {round_n}?",
-                "context": "Synthetic context snippet for mock run.",
-                "reasoning_skills": ["comprehension", "synthesis"],
-            },
-            "reference_output": "A concise synthesis of the source's main contribution.",
-            "rubric": [
-                {"id": "c1", "description": "Names the main contribution", "weight": 5},
-                {"id": "c2", "description": "Cites at least one supporting detail", "weight": 3},
-                {"id": "c3", "description": "Avoids generic boilerplate", "weight": 2},
-            ],
-        })
+        return json.dumps(
+            {
+                "payload": {
+                    "question": f"What is the main contribution of the source, as understood at round {round_n}?",
+                    "context": "Synthetic context snippet for mock run.",
+                    "reasoning_skills": ["comprehension", "synthesis"],
+                },
+                "reference_output": "A concise synthesis of the source's main contribution.",
+                "rubric": [
+                    {"id": "c1", "description": "Names the main contribution", "weight": 5},
+                    {"id": "c2", "description": "Cites at least one supporting detail", "weight": 3},
+                    {"id": "c3", "description": "Avoids generic boilerplate", "weight": 2},
+                ],
+            }
+        )
     if canon == "reflector":
-        return json.dumps({
-            "feedback": [
-                "Make the question depend on a source-specific detail.",
-                "Avoid framings answerable from generic knowledge.",
-            ],
-            "new_angle": "Target a quantitative claim or design choice unique to the source.",
-        })
+        return json.dumps(
+            {
+                "feedback": [
+                    "Make the question depend on a source-specific detail.",
+                    "Avoid framings answerable from generic knowledge.",
+                ],
+                "new_angle": "Target a quantitative claim or design choice unique to the source.",
+            }
+        )
     if canon == "quality":
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
     if canon == "judge":
         solver_tag = "weak" if "[solver=weak]" in all_text else "strong"
         if solver_tag == "weak":
-            return json.dumps({
-                "per_criterion": {"c1": 0.2, "c2": 0.0, "c3": 0.1},
-                "total": 0.13,
-                "failure_modes": ["generic_response"],
-            })
-        return json.dumps({
-            "per_criterion": {"c1": 0.95, "c2": 0.85, "c3": 0.8},
-            "total": 0.88,
-            "failure_modes": [],
-        })
+            return json.dumps(
+                {
+                    "per_criterion": {"c1": 0.2, "c2": 0.0, "c3": 0.1},
+                    "total": 0.13,
+                    "failure_modes": ["generic_response"],
+                }
+            )
+        return json.dumps(
+            {
+                "per_criterion": {"c1": 0.95, "c2": 0.85, "c3": 0.8},
+                "total": 0.88,
+                "failure_modes": [],
+            }
+        )
     if canon == "weak":
         return "The source seems to be about general AI topics. It probably contributes something useful."
     if canon == "strong":
@@ -168,26 +179,30 @@ def _metaopt_handler(role: str, messages: list[Message]) -> str:
     canon = _canonical_role(role, all_text)
 
     if canon == "meta_mutator":
-        return json.dumps({
-            "rationale": "Add source-specificity rule to widen weak/strong gap.",
-            "challenger_rules_add": [_MARKER_RULE],
-        })
+        return json.dumps(
+            {
+                "rationale": "Add source-specificity rule to widen weak/strong gap.",
+                "challenger_rules_add": [_MARKER_RULE],
+            }
+        )
 
     if canon == "challenger":
         marker = _MARKER_RULE in all_text
         c1 = "[SPECIFIC] Names a source-specific contribution" if marker else "Names contribution"
-        return json.dumps({
-            "payload": {
-                "question": "What specific contribution does this source make?",
-                "context": "Synthetic context.",
-                "reasoning_skills": ["synthesis"],
-            },
-            "reference_output": "The contribution as named in the source.",
-            "rubric": [
-                {"id": "c1", "description": c1, "weight": 5},
-                {"id": "c2", "description": "Cites a detail from the source", "weight": 3},
-            ],
-        })
+        return json.dumps(
+            {
+                "payload": {
+                    "question": "What specific contribution does this source make?",
+                    "context": "Synthetic context.",
+                    "reasoning_skills": ["synthesis"],
+                },
+                "reference_output": "The contribution as named in the source.",
+                "rubric": [
+                    {"id": "c1", "description": c1, "weight": 5},
+                    {"id": "c2", "description": "Cites a detail from the source", "weight": 3},
+                ],
+            }
+        )
     if canon == "reflector":
         return json.dumps({"feedback": ["push for source-specificity"], "new_angle": "quantitative claim"})
     if canon == "quality":
@@ -196,11 +211,13 @@ def _metaopt_handler(role: str, messages: list[Message]) -> str:
         specific = "[SPECIFIC]" in all_text
         if "[solver=weak]" in all_text:
             return json.dumps({"per_criterion": {"c1": 0.25, "c2": 0.10}, "total": 0.20, "failure_modes": []})
-        return json.dumps({
-            "per_criterion": {"c1": 0.95 if specific else 0.55, "c2": 0.7 if specific else 0.55},
-            "total": 0.85 if specific else 0.55,
-            "failure_modes": [] if specific else ["generic_response"],
-        })
+        return json.dumps(
+            {
+                "per_criterion": {"c1": 0.95 if specific else 0.55, "c2": 0.7 if specific else 0.55},
+                "total": 0.85 if specific else 0.55,
+                "failure_modes": [] if specific else ["generic_response"],
+            }
+        )
     if canon == "weak":
         return "generic weak attempt"
     if canon == "strong":

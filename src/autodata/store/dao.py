@@ -8,6 +8,7 @@ The schema is the canonical record of a run — the database *is* the run.
 JSONL and HF exports are produced lazily from ``accepted`` rows via
 :py:meth:`Store.export_jsonl` / :py:meth:`Store.export_hf`.
 """
+
 from __future__ import annotations
 
 import json
@@ -74,9 +75,7 @@ class Store:
                 self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 self.conn.commit()
             elif version != SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"unsupported schema version {version}; expected {SCHEMA_VERSION}"
-                )
+                raise RuntimeError(f"unsupported schema version {version}; expected {SCHEMA_VERSION}")
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Cursor]:
@@ -95,16 +94,16 @@ class Store:
     # Runs
     # ------------------------------------------------------------------
 
-    def create_run(self, run_id: str, *, config: Any, harness: Any = None,
-                   cost_usd_cap: float | None = None) -> None:
+    def create_run(
+        self, run_id: str, *, config: Any, harness: Any = None, cost_usd_cap: float | None = None
+    ) -> None:
         now = _utcnow()
         with self.tx() as cur:
             cur.execute(
                 """INSERT INTO runs (run_id, config_blob, harness_blob, started_at,
                                      last_active_at, status, cost_usd_cap)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (run_id, _dumps(config), _dumps(harness), now, now,
-                 RUN_STATUS_RUNNING, cost_usd_cap),
+                (run_id, _dumps(config), _dumps(harness), now, now, RUN_STATUS_RUNNING, cost_usd_cap),
             )
 
     def update_run_status(self, run_id: str, status: str) -> None:
@@ -131,8 +130,9 @@ class Store:
     # Items
     # ------------------------------------------------------------------
 
-    def insert_item(self, *, run_id: str, source_id: str, domain: str,
-                    state: str, source_metadata: dict | None = None) -> str:
+    def insert_item(
+        self, *, run_id: str, source_id: str, domain: str, state: str, source_metadata: dict | None = None
+    ) -> str:
         item_id = stable_id(run_id, source_id)
         now = _utcnow()
         with self.tx() as cur:
@@ -141,17 +141,20 @@ class Store:
                    (item_id, run_id, source_id, domain, state, current_round,
                     source_metadata, created_at, updated_at)
                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (item_id, run_id, source_id, domain, state,
-                 _dumps(source_metadata), now, now),
+                (item_id, run_id, source_id, domain, state, _dumps(source_metadata), now, now),
             )
         return item_id
 
-    def update_item(self, item_id: str, *,
-                    state: str | None = None,
-                    current_round: int | None = None,
-                    final_round: int | None = None,
-                    rejection_reasons: list[str] | None = None,
-                    updated_at: str | None = None) -> None:
+    def update_item(
+        self,
+        item_id: str,
+        *,
+        state: str | None = None,
+        current_round: int | None = None,
+        final_round: int | None = None,
+        rejection_reasons: list[str] | None = None,
+        updated_at: str | None = None,
+    ) -> None:
         """Update an item row.
 
         ``updated_at`` defaults to ``_utcnow()``. The dispatcher passes an
@@ -185,7 +188,7 @@ class Store:
         return self.conn.execute(
             f"""SELECT i.* FROM items i
                WHERE i.run_id = ?
-                 AND i.state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})
+                 AND i.state NOT IN ({",".join("?" * len(TERMINAL_ITEM_STATES))})
                  AND EXISTS (
                     SELECT 1 FROM responses r
                     JOIN requests q ON q.request_id = r.request_id
@@ -215,7 +218,7 @@ class Store:
             return self.conn.execute(
                 f"""SELECT item_id, source_id, state, current_round, final_round, rejection_reasons
                     FROM items WHERE run_id=?
-                    AND state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})
+                    AND state NOT IN ({",".join("?" * len(TERMINAL_ITEM_STATES))})
                     ORDER BY updated_at""",
                 (run_id, *TERMINAL_ITEM_STATES),
             ).fetchall()
@@ -228,7 +231,7 @@ class Store:
     def has_non_terminal_items(self, run_id: str) -> bool:
         row = self.conn.execute(
             f"""SELECT 1 FROM items WHERE run_id=?
-                AND state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))}) LIMIT 1""",
+                AND state NOT IN ({",".join("?" * len(TERMINAL_ITEM_STATES))}) LIMIT 1""",
             (run_id, *TERMINAL_ITEM_STATES),
         ).fetchone()
         return row is not None
@@ -241,11 +244,16 @@ class Store:
     def round_id(item_id: str, round_n: int) -> str:
         return stable_id("round", item_id, round_n)
 
-    def upsert_round(self, *, item_id: str, round_n: int,
-                     candidate: Candidate | None = None,
-                     quality: QualityCheck | None = None,
-                     evaluation: EvalReport | None = None,
-                     reflection: str | None = None) -> str:
+    def upsert_round(
+        self,
+        *,
+        item_id: str,
+        round_n: int,
+        candidate: Candidate | None = None,
+        quality: QualityCheck | None = None,
+        evaluation: EvalReport | None = None,
+        reflection: str | None = None,
+    ) -> str:
         rid = self.round_id(item_id, round_n)
         now = _utcnow()
         with self.tx() as cur:
@@ -256,8 +264,16 @@ class Store:
                        (round_id, item_id, round_n, candidate_blob, quality_blob,
                         eval_blob, reflection, started_at, ended_at, accepted)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)""",
-                    (rid, item_id, round_n, _dumps(candidate), _dumps(quality),
-                     _dumps(evaluation), reflection, now),
+                    (
+                        rid,
+                        item_id,
+                        round_n,
+                        _dumps(candidate),
+                        _dumps(quality),
+                        _dumps(evaluation),
+                        reflection,
+                        now,
+                    ),
                 )
             else:
                 sets = []
@@ -319,11 +335,20 @@ class Store:
                     temperature, max_tokens)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
-                    (r["request_id"], r["item_id"], r["round_n"], r["role"],
-                     r["model_key"], r.get("attempt", 0),
-                     _dumps(r["messages"]), 1 if r.get("json_mode") else 0,
-                     r.get("parent_response_id"), REQ_PENDING,
-                     r.get("temperature"), r.get("max_tokens"))
+                    (
+                        r["request_id"],
+                        r["item_id"],
+                        r["round_n"],
+                        r["role"],
+                        r["model_key"],
+                        r.get("attempt", 0),
+                        _dumps(r["messages"]),
+                        1 if r.get("json_mode") else 0,
+                        r.get("parent_response_id"),
+                        REQ_PENDING,
+                        r.get("temperature"),
+                        r.get("max_tokens"),
+                    )
                     for r in rows
                 ],
             )
@@ -357,9 +382,7 @@ class Store:
                 (REQ_PENDING, run_id),
             ).fetchone()
         else:
-            row = self.conn.execute(
-                "SELECT COUNT(*) FROM requests WHERE status=?", (REQ_PENDING,)
-            ).fetchone()
+            row = self.conn.execute("SELECT COUNT(*) FROM requests WHERE status=?", (REQ_PENDING,)).fetchone()
         return int(row[0])
 
     def in_flight_count(self, run_id: str | None = None) -> int:
@@ -408,7 +431,8 @@ class Store:
             cur = self.conn.execute("SELECT * FROM requests WHERE item_id=? ORDER BY rowid", (item_id,))
         else:
             cur = self.conn.execute(
-                "SELECT * FROM requests WHERE item_id=? AND round_n=? ORDER BY rowid", (item_id, round_n),
+                "SELECT * FROM requests WHERE item_id=? AND round_n=? ORDER BY rowid",
+                (item_id, round_n),
             )
         return [RequestRow.from_row(r) for r in cur.fetchall()]
 
@@ -420,7 +444,11 @@ class Store:
         return [row["request_id"] for row in cur.fetchall()]
 
     def mark_request_failed(
-        self, request_id: str, error: str, *, max_failures: int,
+        self,
+        request_id: str,
+        error: str,
+        *,
+        max_failures: int,
     ) -> RequestRow:
         """Record a failed attempt and decide the next status atomically.
 
@@ -446,8 +474,7 @@ class Store:
                        END
                    WHERE request_id = ?
                    RETURNING *""",
-                (error, max_failures, REQ_FAILED, REQ_PENDING,
-                 max_failures, now, request_id),
+                (error, max_failures, REQ_FAILED, REQ_PENDING, max_failures, now, request_id),
             )
             row = cur.fetchone()
             if row is None:
@@ -458,11 +485,17 @@ class Store:
     # Responses
     # ------------------------------------------------------------------
 
-    def insert_response(self, *, request_id: str, model: str, text: str,
-                        prompt_tokens: int | None = None,
-                        completion_tokens: int | None = None,
-                        cost_usd: float | None = None,
-                        duration_ms: int | None = None) -> None:
+    def insert_response(
+        self,
+        *,
+        request_id: str,
+        model: str,
+        text: str,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        cost_usd: float | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
         """Insert a response and atomically mark the request done.
 
         Idempotent on request_id (skipped if a response row already exists).
@@ -474,9 +507,7 @@ class Store:
         # committed concurrently is guaranteed to have received_at > that.
         with self.tx() as cur:
             now = _utcnow()
-            existing = cur.execute(
-                "SELECT 1 FROM responses WHERE response_id=?", (request_id,)
-            ).fetchone()
+            existing = cur.execute("SELECT 1 FROM responses WHERE response_id=?", (request_id,)).fetchone()
             if existing is not None:
                 return
             cur.execute(
@@ -484,8 +515,17 @@ class Store:
                    (response_id, request_id, model, text, prompt_tokens,
                     completion_tokens, cost_usd, duration_ms, received_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (request_id, request_id, model, text, prompt_tokens,
-                 completion_tokens, cost_usd, duration_ms, now),
+                (
+                    request_id,
+                    request_id,
+                    model,
+                    text,
+                    prompt_tokens,
+                    completion_tokens,
+                    cost_usd,
+                    duration_ms,
+                    now,
+                ),
             )
             cur.execute(
                 "UPDATE requests SET status=?, completed_at=? WHERE request_id=?",
@@ -544,17 +584,22 @@ class Store:
         return cur.fetchall()
 
     def cost_so_far(self, run_id: str) -> float:
-        row = self.conn.execute(
-            "SELECT cost_usd_actual FROM runs WHERE run_id=?", (run_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT cost_usd_actual FROM runs WHERE run_id=?", (run_id,)).fetchone()
         return float(row[0]) if row else 0.0
 
     # ------------------------------------------------------------------
     # Solver scores
     # ------------------------------------------------------------------
 
-    def insert_score(self, *, item_id: str, round_n: int, score: SolverScore,
-                     solver_response_id: str, judge_response_id: str) -> str:
+    def insert_score(
+        self,
+        *,
+        item_id: str,
+        round_n: int,
+        score: SolverScore,
+        solver_response_id: str,
+        judge_response_id: str,
+    ) -> str:
         round_id = self.round_id(item_id, round_n)
         score_id = stable_id("score", round_id, score.solver, score.attempt)
         with self.tx() as cur:
@@ -563,9 +608,18 @@ class Store:
                    (score_id, round_id, solver, attempt, total, per_criterion,
                     failure_modes, raw_response, solver_response_id, judge_response_id)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (score_id, round_id, score.solver, score.attempt, score.total,
-                 _dumps(score.per_criterion), _dumps(score.failure_modes),
-                 score.raw_response, solver_response_id, judge_response_id),
+                (
+                    score_id,
+                    round_id,
+                    score.solver,
+                    score.attempt,
+                    score.total,
+                    _dumps(score.per_criterion),
+                    _dumps(score.failure_modes),
+                    score.raw_response,
+                    solver_response_id,
+                    judge_response_id,
+                ),
             )
         return score_id
 
@@ -578,14 +632,16 @@ class Store:
         )
         out: list[SolverScore] = []
         for row in cur.fetchall():
-            out.append(SolverScore(
-                solver=row["solver"],
-                attempt=row["attempt"],
-                raw_response=row["raw_response"] or "",
-                total=row["total"],
-                per_criterion=_loads(row["per_criterion"]) or {},
-                failure_modes=_loads(row["failure_modes"]) or [],
-            ))
+            out.append(
+                SolverScore(
+                    solver=row["solver"],
+                    attempt=row["attempt"],
+                    raw_response=row["raw_response"] or "",
+                    total=row["total"],
+                    per_criterion=_loads(row["per_criterion"]) or {},
+                    failure_modes=_loads(row["failure_modes"]) or [],
+                )
+            )
         return out
 
     # ------------------------------------------------------------------
@@ -667,7 +723,9 @@ class Store:
         return counts
 
     def unrecoverable_items(
-        self, run_id: str, max_request_failures: int,
+        self,
+        run_id: str,
+        max_request_failures: int,
     ) -> list[tuple[str, str | None]]:
         """Items owning a request that has hit the failure cap.
 
@@ -684,7 +742,7 @@ class Store:
                FROM items i
                JOIN requests q ON q.item_id = i.item_id
                WHERE i.run_id = ? AND q.status = ? AND q.failure_count >= ?
-                 AND i.state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})
+                 AND i.state NOT IN ({",".join("?" * len(TERMINAL_ITEM_STATES))})
                GROUP BY i.item_id""",
             (run_id, REQ_FAILED, max_request_failures, *TERMINAL_ITEM_STATES),
         )

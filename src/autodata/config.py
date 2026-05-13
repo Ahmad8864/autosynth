@@ -95,11 +95,11 @@ class SafetyConfig(BaseModel):
 class DispatcherConfig(BaseModel):
     """Settings for the request-fulfillment dispatcher."""
 
-    concurrency: int = 4              # outbound LLM calls in flight per loop tick
-    poll_interval_s: float = 5.0      # batch dispatcher polling cadence
-    shutdown_grace_s: float = 5.0     # SIGINT/SIGTERM grace before hard exit
-    max_request_failures: int = 3     # request retries before terminal REJECTED
-    items_per_advance: int = 50       # max items to advance per loop iteration
+    concurrency: int = 4  # outbound LLM calls in flight per loop tick
+    poll_interval_s: float = 5.0  # batch dispatcher polling cadence
+    shutdown_grace_s: float = 5.0  # SIGINT/SIGTERM grace before hard exit
+    max_request_failures: int = 3  # request retries before terminal REJECTED
+    items_per_advance: int = 50  # max items to advance per loop iteration
 
 
 class MetaOptConfig(BaseModel):

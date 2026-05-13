@@ -4,6 +4,7 @@ For each iteration: pick a parent by Boltzmann sampling on train score, ask
 the mutator LLM for a diff, evaluate the child on train items, and accept
 only if validation also improves on the parent.
 """
+
 from __future__ import annotations
 
 import copy
@@ -49,10 +50,12 @@ class MetaOptimizer:
             )
         mutator_cfg = self.meta.mutator or run_cfg.orchestrator
         self.mutator = Mutator(
-            LLMClient(LLMConfig(
-                max_retries=run_cfg.max_retries,
-                request_timeout_s=run_cfg.request_timeout_s,
-            )),
+            LLMClient(
+                LLMConfig(
+                    max_retries=run_cfg.max_retries,
+                    request_timeout_s=run_cfg.request_timeout_s,
+                )
+            ),
             model_key=mutator_cfg.provider_model,
             temperature=mutator_cfg.temperature,
             max_tokens=mutator_cfg.max_tokens,

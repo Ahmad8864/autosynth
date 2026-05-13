@@ -4,6 +4,7 @@ The only DAO outputs that aren't bare ``sqlite3.Row``. They mirror the
 request/response tables exactly; conversion to/from them is local to the DAO
 and to the dispatcher's hydration layer.
 """
+
 from __future__ import annotations
 
 import sqlite3

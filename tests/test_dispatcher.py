@@ -4,6 +4,7 @@ Covers: end-to-end happy-path drive via local fulfill, claim_pending
 concurrency under load, budget abort, resume normalization integration,
 and the unrecoverable-failure path.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,6 +31,7 @@ from autodata.store import Store
 # ---------------------------------------------------------------------------
 # fixtures + mock scenarios
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def docs_dir(tmp_path: Path) -> Path:
@@ -68,13 +70,22 @@ def _seed_run(store: Store, cfg: RunConfig, docs_dir: Path) -> tuple[Dispatcher,
     store.create_run(cfg.run_id, config=cfg.model_dump(mode="json"))
     grounding: dict[str, GroundingItem] = {}
     for item in domain.load_grounding():
-        store.insert_item(run_id=cfg.run_id, source_id=item.source_id,
-                          domain=domain.name, state=State.PENDING.value,
-                          source_metadata=item.metadata)
+        store.insert_item(
+            run_id=cfg.run_id,
+            source_id=item.source_id,
+            domain=domain.name,
+            state=State.PENDING.value,
+            source_metadata=item.metadata,
+        )
         grounding[item.source_id] = item
     disp = Dispatcher(
-        store=store, llm=LLMClient(), domain=domain, cfg=cfg,
-        run_id=cfg.run_id, harness=DEFAULT_HARNESS, grounding=grounding,
+        store=store,
+        llm=LLMClient(),
+        domain=domain,
+        cfg=cfg,
+        run_id=cfg.run_id,
+        harness=DEFAULT_HARNESS,
+        grounding=grounding,
     )
     return disp, grounding
 
@@ -82,15 +93,20 @@ def _seed_run(store: Store, cfg: RunConfig, docs_dir: Path) -> tuple[Dispatcher,
 # Mock scenario: deterministic accept path.
 def _disp_happy(role: str, messages):
     from autodata.llm.mock import _canonical_role, _join_messages
+
     all_text = _join_messages(messages)
     canon = _canonical_role(role, all_text)
     if canon == "challenger":
-        return json.dumps({
-            "payload": {"question": "What is documented?", "context": "synthetic"},
-            "reference_output": "the documented fact",
-            "rubric": [{"id": "c1", "description": "names fact", "weight": 5},
-                       {"id": "c2", "description": "cites", "weight": 3}],
-        })
+        return json.dumps(
+            {
+                "payload": {"question": "What is documented?", "context": "synthetic"},
+                "reference_output": "the documented fact",
+                "rubric": [
+                    {"id": "c1", "description": "names fact", "weight": 5},
+                    {"id": "c2", "description": "cites", "weight": 3},
+                ],
+            }
+        )
     if canon == "quality":
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
     if canon == "judge":
@@ -121,6 +137,7 @@ register_mock("disp_failing", _disp_failing)
 # happy path
 # ---------------------------------------------------------------------------
 
+
 def test_dispatcher_happy_path_accepts_both_items(store, cfg, docs_dir):
     disp, _ = _seed_run(store, cfg, docs_dir)
     summary = disp.run()
@@ -137,7 +154,8 @@ def test_dispatcher_writes_solver_scores(store, cfg, docs_dir):
     for row in all_items:
         scores = store.conn.execute(
             "SELECT solver, attempt FROM solver_scores ss "
-            "JOIN rounds r ON ss.round_id = r.round_id WHERE r.item_id=?", (row["item_id"],)
+            "JOIN rounds r ON ss.round_id = r.round_id WHERE r.item_id=?",
+            (row["item_id"],),
         ).fetchall()
         assert len(scores) == 4
 
@@ -153,7 +171,7 @@ def test_dispatcher_writes_round_blobs(store, cfg, docs_dir):
         assert r["candidate_blob"] is not None
         assert r["quality_blob"] is not None
         assert r["eval_blob"] is not None
-        assert r["accepted"] == 1   # all rounds accepted under disp_happy
+        assert r["accepted"] == 1  # all rounds accepted under disp_happy
 
 
 def test_dispatcher_export_jsonl_after_run(store, cfg, docs_dir, tmp_path):
@@ -170,6 +188,7 @@ def test_dispatcher_export_jsonl_after_run(store, cfg, docs_dir, tmp_path):
 # ---------------------------------------------------------------------------
 # concurrency / claim_pending under load
 # ---------------------------------------------------------------------------
+
 
 def test_dispatcher_concurrent_fulfill_no_duplicate_responses(store, cfg, docs_dir):
     # Use a higher concurrency to stress claim_pending.
@@ -189,6 +208,7 @@ def test_dispatcher_concurrent_fulfill_no_duplicate_responses(store, cfg, docs_d
 # unrecoverable failure path
 # ---------------------------------------------------------------------------
 
+
 def test_dispatcher_marks_item_rejected_after_failure_cap(store, cfg, docs_dir):
     cfg.challenger.provider_model = "mock/disp_failing"
     cfg.dispatcher.max_request_failures = 2
@@ -199,8 +219,13 @@ def test_dispatcher_marks_item_rejected_after_failure_cap(store, cfg, docs_dir):
     # We restart the dispatcher; resume normalization reverts failed→pending.
     # The second run drives failure_count to 2 → at cap.
     disp2 = Dispatcher(
-        store=store, llm=LLMClient(), domain=disp.domain, cfg=cfg,
-        run_id=cfg.run_id, harness=DEFAULT_HARNESS, grounding=disp.grounding,
+        store=store,
+        llm=LLMClient(),
+        domain=disp.domain,
+        cfg=cfg,
+        run_id=cfg.run_id,
+        harness=DEFAULT_HARNESS,
+        grounding=disp.grounding,
     )
     disp2.run()
     summary = disp2._summarize()
@@ -217,6 +242,7 @@ def test_dispatcher_marks_item_rejected_after_failure_cap(store, cfg, docs_dir):
 # budget abort
 # ---------------------------------------------------------------------------
 
+
 def test_dispatcher_aborts_when_budget_exceeded(store, cfg, docs_dir):
     cfg.budget_usd = 0.0001
     disp, _ = _seed_run(store, cfg, docs_dir)
@@ -230,6 +256,7 @@ def test_dispatcher_aborts_when_budget_exceeded(store, cfg, docs_dir):
 # ---------------------------------------------------------------------------
 # resume after kill
 # ---------------------------------------------------------------------------
+
 
 def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
     """Drive the dispatcher, kill it mid-flight, restart, finish."""
@@ -248,19 +275,31 @@ def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
     if one:
         # Mark it done with a fake response so we have at least partial state.
         from autodata.llm import LLMRequest
+
         req = one[0]
         request = LLMRequest(
-            request_id=req.request_id, item_id=req.item_id, round_n=req.round_n,
-            role=req.role, model_key=req.model_key, messages=req.messages,
-            json_mode=req.json_mode, attempt=req.attempt,
+            request_id=req.request_id,
+            item_id=req.item_id,
+            round_n=req.round_n,
+            role=req.role,
+            model_key=req.model_key,
+            messages=req.messages,
+            json_mode=req.json_mode,
+            attempt=req.attempt,
         )
         resp = LLMClient().complete(request)
-        store.insert_response(request_id=req.request_id, model=resp.model,
-                              text=resp.text, cost_usd=resp.cost_usd)
+        store.insert_response(
+            request_id=req.request_id, model=resp.model, text=resp.text, cost_usd=resp.cost_usd
+        )
     # Restart from scratch.
     disp2 = Dispatcher(
-        store=store, llm=LLMClient(), domain=disp.domain, cfg=cfg,
-        run_id=cfg.run_id, harness=DEFAULT_HARNESS, grounding=grounding,
+        store=store,
+        llm=LLMClient(),
+        domain=disp.domain,
+        cfg=cfg,
+        run_id=cfg.run_id,
+        harness=DEFAULT_HARNESS,
+        grounding=grounding,
     )
     summary = disp2.run()
     assert summary.accepted == 2

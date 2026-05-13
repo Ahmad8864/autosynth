@@ -1,4 +1,5 @@
 """Boltzmann (softmax) parent selection over the harness population."""
+
 from __future__ import annotations
 
 import math

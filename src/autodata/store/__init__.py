@@ -13,6 +13,7 @@ Layout:
   - :mod:`autodata.store.types`  — ``RequestRow`` / ``ResponseRow`` DTOs
   - :mod:`autodata.store.dao`    — the ``Store`` class itself
 """
+
 from __future__ import annotations
 
 from autodata.store.dao import Store

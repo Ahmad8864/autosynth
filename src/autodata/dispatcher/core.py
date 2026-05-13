@@ -13,6 +13,7 @@ the default; the batch-API variant lives in :mod:`autodata.dispatcher.batch`.
 DTO mapping (store rows ↔ frozen pipeline state) lives in
 :mod:`autodata.dispatcher.hydration` so the run loop stays focused on flow.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -103,7 +104,8 @@ class Dispatcher:
         if self._pool is None:
             workers = max(1, self.cfg.dispatcher.concurrency)
             self._pool = ThreadPoolExecutor(
-                max_workers=workers, thread_name_prefix="autodata-dispatcher",
+                max_workers=workers,
+                thread_name_prefix="autodata-dispatcher",
             )
         return self._pool
 
@@ -165,10 +167,9 @@ class Dispatcher:
 
     def _advance_ready_items(self) -> int:
         per_advance = self.cfg.dispatcher.items_per_advance
-        rows = (
-            self.store.items_pending_first_step(self.run_id, limit=per_advance)
-            + self.store.items_ready_to_advance(self.run_id, limit=per_advance)
-        )
+        rows = self.store.items_pending_first_step(
+            self.run_id, limit=per_advance
+        ) + self.store.items_ready_to_advance(self.run_id, limit=per_advance)
         for row in rows:
             self._advance_one(row)
         return len(rows)
@@ -192,9 +193,13 @@ class Dispatcher:
             return
         try:
             result = step(
-                item_state, responses,
-                cfg=self.cfg, harness=self.harness, domain=self.domain,
-                grounding=grounding, safety_filter=self.safety_filter,
+                item_state,
+                responses,
+                cfg=self.cfg,
+                harness=self.harness,
+                domain=self.domain,
+                grounding=grounding,
+                safety_filter=self.safety_filter,
             )
         except Exception:
             logger.exception("pipeline step crashed for item {}", item_state.item_id)
@@ -202,7 +207,10 @@ class Dispatcher:
         self._persist_step_result(result, consumed_watermark=consumed_watermark)
 
     def _persist_step_result(
-        self, result: StepResult, *, consumed_watermark: str | None = None,
+        self,
+        result: StepResult,
+        *,
+        consumed_watermark: str | None = None,
     ) -> None:
         new_state = result.state
         completed = result.completed_round
@@ -229,11 +237,14 @@ class Dispatcher:
             )
             accepted = new_state.state == State.ACCEPTED
             self.store.finalize_round(
-                new_state.item_id, completed.refinement_round, accepted=accepted,
+                new_state.item_id,
+                completed.refinement_round,
+                accepted=accepted,
             )
             if accepted:
                 payload = self.domain.format_accepted(
-                    completed.candidate, accepted_extras(new_state, completed),
+                    completed.candidate,
+                    accepted_extras(new_state, completed),
                 )
                 self.store.insert_accepted(
                     item_id=new_state.item_id,
@@ -266,17 +277,14 @@ class Dispatcher:
         if result.new_requests:
             self.store.insert_requests([request_to_row(r) for r in result.new_requests])
 
-        final_round = (
-            new_state.current_round if new_state.state in TERMINAL_STATES else None
-        )
+        final_round = new_state.current_round if new_state.state in TERMINAL_STATES else None
         self.store.update_item(
             new_state.item_id,
             state=new_state.state.value,
             current_round=new_state.current_round,
             final_round=final_round,
             rejection_reasons=(
-                list(new_state.rejection_reasons) or None
-                if new_state.state == State.REJECTED else None
+                list(new_state.rejection_reasons) or None if new_state.state == State.REJECTED else None
             ),
             # Pin updated_at to the max received_at of consumed responses so
             # worker rows committed concurrently with this step (and thus
@@ -313,10 +321,13 @@ class Dispatcher:
         cap = self.cfg.dispatcher.max_request_failures
         for item_id, last_error in self.store.unrecoverable_items(self.run_id, cap):
             reason = f"unrecoverable after {cap} attempts: {last_error or 'unknown error'}"
-            logger.warning("item {} hit failure cap; marking REJECTED ({})",
-                           item_id, last_error or "no error recorded")
+            logger.warning(
+                "item {} hit failure cap; marking REJECTED ({})", item_id, last_error or "no error recorded"
+            )
             self.store.update_item(
-                item_id, state=ITEM_REJECTED, rejection_reasons=[reason],
+                item_id,
+                state=ITEM_REJECTED,
+                rejection_reasons=[reason],
             )
 
     def _budget_exceeded(self) -> bool:
@@ -329,7 +340,9 @@ class Dispatcher:
         if spent >= _BUDGET_WARN_FRACTION * cap and not self._budget_warned:
             logger.warning(
                 "cost ${:.4f} reached {:.0%} of budget ${:.4f}",
-                spent, _BUDGET_WARN_FRACTION, cap,
+                spent,
+                _BUDGET_WARN_FRACTION,
+                cap,
             )
             self._budget_warned = True
         return False
@@ -344,6 +357,7 @@ class Dispatcher:
             self._stop.set()
             # Cut through any in-progress idle wait so we exit promptly.
             self._work_ready.set()
+
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 prev = signal.signal(sig, handler)

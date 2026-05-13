@@ -10,6 +10,7 @@ The module defines a small :class:`BatchProvider` protocol and an in-process
 :class:`MockBatchProvider` used by tests and demos. Real provider
 implementations (OpenAI / Anthropic) live alongside their SDK adapters.
 """
+
 from __future__ import annotations
 
 from abc import abstractmethod
@@ -116,6 +117,7 @@ def make_fulfill_batch(provider: BatchProvider):
 
     Plug into ``Dispatcher(..., fulfill=make_fulfill_batch(provider))``.
     """
+
     def _fulfill(requests: list[RequestRow], dispatcher) -> None:
         if not requests:
             return
@@ -133,12 +135,14 @@ def make_fulfill_batch(provider: BatchProvider):
                 cap = dispatcher.cfg.dispatcher.max_request_failures
                 for r in group:
                     dispatcher.store.mark_request_failed(
-                        r.request_id, f"batch_submit_error: {e}",
+                        r.request_id,
+                        f"batch_submit_error: {e}",
                         max_failures=cap,
                     )
                 continue
             dispatcher.store.tag_batch(handle.batch_id, [r.request_id for r in group])
             logger.info("submitted batch {} ({} requests)", handle.batch_id, len(group))
+
     return _fulfill
 
 
@@ -165,7 +169,8 @@ def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
         for br in results:
             if br.error is not None or br.response is None:
                 store.mark_request_failed(
-                    br.request_id, br.error or "batch fetch missing response",
+                    br.request_id,
+                    br.error or "batch fetch missing response",
                     max_failures=cap,
                 )
                 continue

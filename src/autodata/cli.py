@@ -30,7 +30,8 @@ from autodata.runner import Runner
 from autodata.store import Store
 
 app = typer.Typer(
-    add_completion=False, no_args_is_help=True,
+    add_completion=False,
+    no_args_is_help=True,
     help="autodata: agentic synthetic data generation",
 )
 console = Console()
@@ -126,7 +127,9 @@ def metaopt_cmd(
 def init_domain_cmd(
     name: str = typer.Argument(..., help="snake_case domain name"),
     out: Path | None = typer.Option(
-        None, "--out", "-o",
+        None,
+        "--out",
+        "-o",
         help="Output file (defaults to ./domains/<name>.py)",
     ),
 ):
@@ -220,9 +223,7 @@ def resume_cmd(
     cfg.resume = True
     runner = Runner(cfg, run_id=run_dir.name)
     summary = runner.run()
-    console.print(
-        f"resumed {runner.run_id}: accepted={summary.accepted} rejected={summary.rejected}"
-    )
+    console.print(f"resumed {runner.run_id}: accepted={summary.accepted} rejected={summary.rejected}")
 
 
 @app.command("status")
@@ -232,9 +233,7 @@ def status_cmd(run_dir: Path = typer.Argument(..., exists=True)):
     run_id = run_row["run_id"]
     counts = store.items_terminal_counts(run_id)
     console.print(
-        f"{run_id}  status={run_row['status']}  "
-        f"cost=${store.cost_so_far(run_id):.4f}  "
-        f"states={dict(counts)}"
+        f"{run_id}  status={run_row['status']}  cost=${store.cost_so_far(run_id):.4f}  states={dict(counts)}"
     )
 
 

@@ -6,6 +6,7 @@ Reference in your YAML config as:
       path: ./my_domain.py:MyDomain
       params: { foo: bar }
 """
+
 from __future__ import annotations
 
 import json
@@ -56,23 +57,37 @@ class MyDomain(DomainAdapter):
 
     def quality_prompt(self, candidate: Candidate):
         return [
-            {"role": "system", "content": "ROLE:QUALITY. Audit the candidate. Return JSON {passed,failures,notes}."},
-            {"role": "user", "content": json.dumps({
-                "payload": candidate.payload,
-                "reference_output": candidate.reference_output,
-                "rubric": [c.model_dump() for c in candidate.rubric],
-            })},
+            {
+                "role": "system",
+                "content": "ROLE:QUALITY. Audit the candidate. Return JSON {passed,failures,notes}.",
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "payload": candidate.payload,
+                        "reference_output": candidate.reference_output,
+                        "rubric": [c.model_dump() for c in candidate.rubric],
+                    }
+                ),
+            },
         ]
 
     def judge_prompt(self, candidate: Candidate, solver_response: str, solver_role: str):
         return [
-            {"role": "system", "content": (
-                "ROLE:JUDGE. Score the solver response against the rubric. "
-                "Return STRICT JSON: {per_criterion:{id:float},total:float,failure_modes:[...]}."
-            )},
-            {"role": "user", "content": (
-                f"[solver={solver_role}] "
-                f"rubric={json.dumps([c.model_dump() for c in candidate.rubric])} "
-                f"reference={candidate.reference_output} response={solver_response}"
-            )},
+            {
+                "role": "system",
+                "content": (
+                    "ROLE:JUDGE. Score the solver response against the rubric. "
+                    "Return STRICT JSON: {per_criterion:{id:float},total:float,failure_modes:[...]}."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"[solver={solver_role}] "
+                    f"rubric={json.dumps([c.model_dump() for c in candidate.rubric])} "
+                    f"reference={candidate.reference_output} response={solver_response}"
+                ),
+            },
         ]

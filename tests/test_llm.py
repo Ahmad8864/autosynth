@@ -4,6 +4,7 @@ Covers: token-bucket math, rate-limit glob matching, mock dispatch
 preserves the legacy register_mock contract, cost accounting delegated
 to ``litellm.completion_cost``, retry on transient errors.
 """
+
 from __future__ import annotations
 
 import time
@@ -24,6 +25,7 @@ from autodata.llm import (
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
 
 class FakeClock:
     def __init__(self, t: float = 0.0):
@@ -46,9 +48,12 @@ class FakeSleep:
         self.clock.advance(dt)
 
 
-def _req(model_key: str = "mock/happy", role: str = "weak",
-         messages: list[Message] | None = None,
-         request_id: str = "req-1") -> LLMRequest:
+def _req(
+    model_key: str = "mock/happy",
+    role: str = "weak",
+    messages: list[Message] | None = None,
+    request_id: str = "req-1",
+) -> LLMRequest:
     return LLMRequest(
         request_id=request_id,
         item_id="item-1",
@@ -63,6 +68,7 @@ def _req(model_key: str = "mock/happy", role: str = "weak",
 # TokenBucket math
 # ---------------------------------------------------------------------------
 
+
 def test_bucket_serves_burst_immediately():
     clock = FakeClock()
     sleep = FakeSleep(clock)
@@ -70,16 +76,16 @@ def test_bucket_serves_burst_immediately():
     bucket.acquire()
     bucket.acquire()
     bucket.acquire()
-    assert sleep.calls == []                  # no sleep within burst
+    assert sleep.calls == []  # no sleep within burst
 
 
 def test_bucket_throttles_after_burst():
     clock = FakeClock()
     sleep = FakeSleep(clock)
     bucket = TokenBucket(rate_per_sec=2.0, burst=2, clock=clock, sleep=sleep)
-    bucket.acquire()       # burst 2 → 1
-    bucket.acquire()       # burst 1 → 0
-    bucket.acquire()       # must wait 0.5s for one refill
+    bucket.acquire()  # burst 2 → 1
+    bucket.acquire()  # burst 1 → 0
+    bucket.acquire()  # must wait 0.5s for one refill
     assert len(sleep.calls) == 1
     assert sleep.calls[0] == pytest.approx(0.5, rel=1e-6)
 
@@ -89,7 +95,7 @@ def test_bucket_refills_continuously():
     sleep = FakeSleep(clock)
     bucket = TokenBucket(rate_per_sec=1.0, burst=1, clock=clock, sleep=sleep)
     bucket.acquire()
-    clock.advance(2.0)      # 2 tokens accumulated but capped at burst=1
+    clock.advance(2.0)  # 2 tokens accumulated but capped at burst=1
     bucket.acquire()
     assert sleep.calls == []
 
@@ -105,11 +111,14 @@ def test_bucket_validates_positive_rate():
 # Rate-limit glob matching
 # ---------------------------------------------------------------------------
 
+
 def test_rate_limit_exact_match_wins():
-    cfg = LLMConfig(rate_limits={
-        "openai/gpt-4o-mini": RateLimitSpec(rpm=10),
-        "openai/*": RateLimitSpec(rpm=1000),
-    })
+    cfg = LLMConfig(
+        rate_limits={
+            "openai/gpt-4o-mini": RateLimitSpec(rpm=10),
+            "openai/*": RateLimitSpec(rpm=1000),
+        }
+    )
     client = LLMClient(cfg)
     bucket = client._limiter_for("openai/gpt-4o-mini")
     assert bucket is not None
@@ -135,6 +144,7 @@ def test_rate_limit_none_means_unlimited():
 # ---------------------------------------------------------------------------
 # Mock dispatch
 # ---------------------------------------------------------------------------
+
 
 def test_mock_dispatch_routes_to_registered_handler():
     register_mock("llm_test_echo", lambda role, msgs: f"echo:{role}")
@@ -164,6 +174,7 @@ def test_mock_response_parses_json():
 # Real (LiteLLM) dispatch — mocked
 # ---------------------------------------------------------------------------
 
+
 class _FakeChoice:
     def __init__(self, content: str):
         self.message = type("M", (), {"content": content})()
@@ -172,10 +183,14 @@ class _FakeChoice:
 class _FakeResp:
     def __init__(self, content: str, prompt_tokens: int = 100, completion_tokens: int = 50):
         self.choices = [_FakeChoice(content)]
-        self.usage = type("U", (), {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-        })()
+        self.usage = type(
+            "U",
+            (),
+            {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            },
+        )()
 
 
 def test_real_dispatch_computes_cost(monkeypatch):
@@ -193,13 +208,19 @@ def test_real_dispatch_computes_cost(monkeypatch):
         return 0.000045
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", fake_completion)
     monkeypatch.setattr(litellm, "completion_cost", fake_cost)
 
     client = LLMClient()
-    req = LLMRequest(request_id="r-1", item_id="i", round_n=1, role="weak",
-                     model_key="openai/gpt-4o-mini",
-                     messages=[{"role": "user", "content": "x"}])
+    req = LLMRequest(
+        request_id="r-1",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="openai/gpt-4o-mini",
+        messages=[{"role": "user", "content": "x"}],
+    )
     resp = client.complete(req)
     assert resp.text == "the answer"
     assert resp.prompt_tokens == 100
@@ -223,13 +244,19 @@ def test_real_dispatch_cost_none_when_litellm_raises(monkeypatch):
         raise RuntimeError("unknown model")
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", fake_completion)
     monkeypatch.setattr(litellm, "completion_cost", boom)
 
     client = LLMClient()
-    req = LLMRequest(request_id="r-cost-none", item_id="i", round_n=1, role="weak",
-                     model_key="brand-new-provider/foo",
-                     messages=[{"role": "user", "content": "x"}])
+    req = LLMRequest(
+        request_id="r-cost-none",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="brand-new-provider/foo",
+        messages=[{"role": "user", "content": "x"}],
+    )
     resp = client.complete(req)
     assert resp.cost_usd is None
 
@@ -245,23 +272,31 @@ def test_price_override_registers_with_litellm(monkeypatch):
         registered.append(reg)
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", fake_completion)
     monkeypatch.setattr(litellm, "register_model", fake_register)
     monkeypatch.setattr(litellm, "completion_cost", lambda *, completion_response: 0.0)
 
     client = LLMClient(LLMConfig(prices={"custom/foo": [1.0, 2.0]}))
-    req = LLMRequest(request_id="r-reg", item_id="i", round_n=1, role="weak",
-                     model_key="custom/foo",
-                     messages=[{"role": "user", "content": "x"}])
+    req = LLMRequest(
+        request_id="r-reg",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="custom/foo",
+        messages=[{"role": "user", "content": "x"}],
+    )
     client.complete(req)
     # And again — registration should be a one-shot.
     client.complete(req)
-    assert registered == [{
-        "custom/foo": {
-            "input_cost_per_token": 1.0 / 1_000_000,
-            "output_cost_per_token": 2.0 / 1_000_000,
+    assert registered == [
+        {
+            "custom/foo": {
+                "input_cost_per_token": 1.0 / 1_000_000,
+                "output_cost_per_token": 2.0 / 1_000_000,
+            }
         }
-    }]
+    ]
 
 
 def test_real_dispatch_passes_json_mode_and_overrides(monkeypatch):
@@ -273,12 +308,21 @@ def test_real_dispatch_passes_json_mode_and_overrides(monkeypatch):
         return fake
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", fake_completion)
 
     client = LLMClient()
-    req = LLMRequest(request_id="r-2", item_id="i", round_n=1, role="judge",
-                     model_key="openai/gpt-4o", messages=[{"role": "user", "content": "x"}],
-                     json_mode=True, temperature=0.0, max_tokens=512)
+    req = LLMRequest(
+        request_id="r-2",
+        item_id="i",
+        round_n=1,
+        role="judge",
+        model_key="openai/gpt-4o",
+        messages=[{"role": "user", "content": "x"}],
+        json_mode=True,
+        temperature=0.0,
+        max_tokens=512,
+    )
     client.complete(req)
     kwargs = captured[0]
     assert kwargs["temperature"] == 0.0
@@ -295,28 +339,38 @@ def test_real_dispatch_spreads_model_extras(monkeypatch):
         return fake
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", fake_completion)
     monkeypatch.setattr(litellm, "completion_cost", lambda *, completion_response: 0.0)
 
-    client = LLMClient(LLMConfig(model_extras={
-        "azure/my-deployment": {
-            "api_base": "https://example.openai.azure.com",
-            "api_version": "2024-02-01",
-            # Should NOT override the explicit per-call value:
-            "temperature": 0.99,
-        },
-        "openai/gpt-4o": {"api_base": "should-not-leak"},
-    }))
-    req = LLMRequest(request_id="r-extras", item_id="i", round_n=1, role="weak",
-                     model_key="azure/my-deployment",
-                     messages=[{"role": "user", "content": "x"}],
-                     temperature=0.0)
+    client = LLMClient(
+        LLMConfig(
+            model_extras={
+                "azure/my-deployment": {
+                    "api_base": "https://example.openai.azure.com",
+                    "api_version": "2024-02-01",
+                    # Should NOT override the explicit per-call value:
+                    "temperature": 0.99,
+                },
+                "openai/gpt-4o": {"api_base": "should-not-leak"},
+            }
+        )
+    )
+    req = LLMRequest(
+        request_id="r-extras",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="azure/my-deployment",
+        messages=[{"role": "user", "content": "x"}],
+        temperature=0.0,
+    )
     client.complete(req)
 
     kwargs = captured[0]
     assert kwargs["api_base"] == "https://example.openai.azure.com"
     assert kwargs["api_version"] == "2024-02-01"
-    assert kwargs["temperature"] == 0.0          # explicit kwarg wins over extras
+    assert kwargs["temperature"] == 0.0  # explicit kwarg wins over extras
     assert kwargs["model"] == "azure/my-deployment"
     # Unrelated model's extras must not bleed in.
     assert "should-not-leak" not in kwargs.values()
@@ -331,13 +385,19 @@ def test_real_dispatch_unset_model_extras_is_noop(monkeypatch):
         return fake
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", fake_completion)
     monkeypatch.setattr(litellm, "completion_cost", lambda *, completion_response: 0.0)
 
     client = LLMClient()  # no model_extras configured
-    req = LLMRequest(request_id="r-noextras", item_id="i", round_n=1, role="weak",
-                     model_key="openai/gpt-4o-mini",
-                     messages=[{"role": "user", "content": "x"}])
+    req = LLMRequest(
+        request_id="r-noextras",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="openai/gpt-4o-mini",
+        messages=[{"role": "user", "content": "x"}],
+    )
     client.complete(req)
     # No sampling params on the request → none in kwargs. Provider defaults apply.
     assert set(captured[0].keys()) == {"model", "messages", "timeout"}
@@ -353,16 +413,23 @@ def test_real_dispatch_retries_on_transient_failure(monkeypatch):
         return _FakeResp("ok")
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", flaky_completion)
 
     client = LLMClient(LLMConfig(max_retries=4))
     # Use a deterministic-but-fast wait by monkey-patching tenacity's sleep.
     import tenacity
+
     monkeypatch.setattr(tenacity.nap, "sleep", lambda *_: None)
 
-    req = LLMRequest(request_id="r-3", item_id="i", round_n=1, role="weak",
-                     model_key="openai/gpt-4o-mini",
-                     messages=[{"role": "user", "content": "x"}])
+    req = LLMRequest(
+        request_id="r-3",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="openai/gpt-4o-mini",
+        messages=[{"role": "user", "content": "x"}],
+    )
     resp = client.complete(req)
     assert resp.text == "ok"
     assert attempts["n"] == 3
@@ -373,14 +440,21 @@ def test_real_dispatch_gives_up_after_max_retries(monkeypatch):
         raise RuntimeError("permanent")
 
     import litellm
+
     monkeypatch.setattr(litellm, "completion", always_fails)
     import tenacity
+
     monkeypatch.setattr(tenacity.nap, "sleep", lambda *_: None)
 
     client = LLMClient(LLMConfig(max_retries=2))
-    req = LLMRequest(request_id="r-4", item_id="i", round_n=1, role="weak",
-                     model_key="openai/gpt-4o-mini",
-                     messages=[{"role": "user", "content": "x"}])
+    req = LLMRequest(
+        request_id="r-4",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="openai/gpt-4o-mini",
+        messages=[{"role": "user", "content": "x"}],
+    )
     with pytest.raises(RuntimeError, match="permanent"):
         client.complete(req)
 
@@ -388,6 +462,7 @@ def test_real_dispatch_gives_up_after_max_retries(monkeypatch):
 # ---------------------------------------------------------------------------
 # Rate limiter integration with complete()
 # ---------------------------------------------------------------------------
+
 
 def test_complete_respects_rate_limit():
     register_mock("llm_test_slow", lambda role, msgs: "ok")

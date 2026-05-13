@@ -4,6 +4,7 @@ Covers the schema, transactional invariants (claim_pending atomicity under
 threads), round materialization timing, the resume normalization table
 from MIGRATION_PLAN.md §4.2, and JSONL export.
 """
+
 from __future__ import annotations
 
 import json
@@ -28,6 +29,7 @@ from autodata.store import (
 # fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def store(tmp_path: Path) -> Store:
     s = Store(tmp_path / "run.db")
@@ -37,7 +39,10 @@ def store(tmp_path: Path) -> Store:
 
 def _candidate(source_id: str = "s1") -> Candidate:
     return Candidate(
-        candidate_id="cand-1", domain="d", source_id=source_id, payload={"q": "?"},
+        candidate_id="cand-1",
+        domain="d",
+        source_id=source_id,
+        payload={"q": "?"},
         rubric=[RubricCriterion(id="c1", description="x", weight=3)],
         reference_output="r",
     )
@@ -45,15 +50,21 @@ def _candidate(source_id: str = "s1") -> Candidate:
 
 def _request(item_id: str, *, request_id: str, role: str = "weak", round_n: int = 1) -> dict:
     return {
-        "request_id": request_id, "item_id": item_id, "round_n": round_n,
-        "role": role, "model_key": "weak_solver", "attempt": 0,
-        "messages": [{"role": "user", "content": "x"}], "json_mode": False,
+        "request_id": request_id,
+        "item_id": item_id,
+        "round_n": round_n,
+        "role": role,
+        "model_key": "weak_solver",
+        "attempt": 0,
+        "messages": [{"role": "user", "content": "x"}],
+        "json_mode": False,
     }
 
 
 # ---------------------------------------------------------------------------
 # schema
 # ---------------------------------------------------------------------------
+
 
 def test_user_version_set(store: Store):
     v = store.conn.execute("PRAGMA user_version").fetchone()[0]
@@ -71,11 +82,10 @@ def test_foreign_keys_on(store: Store):
 
 
 def test_all_tables_created(store: Store):
-    names = {r["name"] for r in store.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()}
-    assert {"runs", "items", "rounds", "requests", "responses",
-            "solver_scores", "accepted"}.issubset(names)
+    names = {
+        r["name"] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert {"runs", "items", "rounds", "requests", "responses", "solver_scores", "accepted"}.issubset(names)
 
 
 def test_unsupported_version_raises(tmp_path: Path):
@@ -90,6 +100,7 @@ def test_unsupported_version_raises(tmp_path: Path):
 # ---------------------------------------------------------------------------
 # runs + items + rounds
 # ---------------------------------------------------------------------------
+
 
 def test_create_and_get_run(store: Store):
     row = store.get_run("r1")
@@ -121,8 +132,9 @@ def test_update_item_state_and_round(store: Store):
 
 def test_update_item_rejection_reasons(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_QUALITY")
-    store.update_item(iid, state="REJECTED", final_round=3,
-                      rejection_reasons=["exhausted_rounds", "gap_too_small"])
+    store.update_item(
+        iid, state="REJECTED", final_round=3, rejection_reasons=["exhausted_rounds", "gap_too_small"]
+    )
     row = store.get_item(iid)
     assert json.loads(row["rejection_reasons"]) == ["exhausted_rounds", "gap_too_small"]
     assert row["final_round"] == 3
@@ -140,7 +152,7 @@ def test_round_materialization_lifecycle(store: Store):
     store.upsert_round(item_id=iid, round_n=1, quality=QualityCheck(passed=True))
     row = store.get_round(iid, 1)
     assert json.loads(row["quality_blob"])["passed"] is True
-    assert row["candidate_blob"] is not None   # not overwritten
+    assert row["candidate_blob"] is not None  # not overwritten
     # 3. attach eval + finalize accepted
     store.upsert_round(item_id=iid, round_n=1, evaluation=EvalReport(accepted=True, gap=0.5))
     store.finalize_round(iid, 1, accepted=True)
@@ -163,6 +175,7 @@ def test_items_terminal_counts(store: Store):
 # requests + responses
 # ---------------------------------------------------------------------------
 
+
 def test_insert_requests_and_pending_count(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     n = store.insert_requests([_request(iid, request_id=f"q{i}") for i in range(5)])
@@ -173,7 +186,7 @@ def test_insert_requests_and_pending_count(store: Store):
 def test_insert_requests_idempotent_on_request_id(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
-    store.insert_requests([_request(iid, request_id="q1")])   # duplicate
+    store.insert_requests([_request(iid, request_id="q1")])  # duplicate
     assert store.pending_count("r1") == 1
 
 
@@ -205,8 +218,8 @@ def test_claim_pending_atomic_under_threads(store: Store):
     for t in threads:
         t.join()
 
-    assert len(claimed_ids) == 50              # exactly the 50 we inserted
-    assert len(set(claimed_ids)) == 50         # no duplicates
+    assert len(claimed_ids) == 50  # exactly the 50 we inserted
+    assert len(set(claimed_ids)) == 50  # no duplicates
     assert store.pending_count("r1") == 0
     assert store.in_flight_count("r1") == 50
 
@@ -248,10 +261,10 @@ def test_responses_since(store: Store):
 def test_pending_request_ids_for_item(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1"), _request(iid, request_id="q2")])
-    store.claim_pending(1)        # q1 -> in_flight, still counts as outstanding
+    store.claim_pending(1)  # q1 -> in_flight, still counts as outstanding
     store.insert_response(request_id="q1", model="m", text="t")
     ids = store.pending_request_ids_for_item(iid)
-    assert set(ids) == {"q2"}     # q1 is done; q2 still pending
+    assert set(ids) == {"q2"}  # q1 is done; q2 still pending
 
 
 def test_mark_request_failed_requeues_below_cap(store: Store):
@@ -289,6 +302,7 @@ def test_mark_request_failed_terminates_at_cap(store: Store):
 # solver scores
 # ---------------------------------------------------------------------------
 
+
 def test_insert_score_references_two_responses(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
@@ -298,10 +312,17 @@ def test_insert_score_references_two_responses(store: Store):
     store.insert_response(request_id="sol1", model="m", text="weak attempt")
     store.insert_response(request_id="jud1", model="m", text="{}")
 
-    score = SolverScore(solver="weak", attempt=0, raw_response="weak attempt", total=0.2,
-                        per_criterion={"c1": 0.2}, failure_modes=["generic"])
-    score_id = store.insert_score(item_id=iid, round_n=1, score=score,
-                                  solver_response_id="sol1", judge_response_id="jud1")
+    score = SolverScore(
+        solver="weak",
+        attempt=0,
+        raw_response="weak attempt",
+        total=0.2,
+        per_criterion={"c1": 0.2},
+        failure_modes=["generic"],
+    )
+    score_id = store.insert_score(
+        item_id=iid, round_n=1, score=score, solver_response_id="sol1", judge_response_id="jud1"
+    )
     row = store.conn.execute("SELECT * FROM solver_scores WHERE score_id=?", (score_id,)).fetchone()
     assert row["solver_response_id"] == "sol1"
     assert row["judge_response_id"] == "jud1"
@@ -318,8 +339,9 @@ def test_scores_for_round_round_trip(store: Store):
     for s in ("weak", "strong"):
         for a in (0, 1):
             score = SolverScore(solver=s, attempt=a, raw_response="x", total=0.5)
-            store.insert_score(item_id=iid, round_n=1, score=score,
-                               solver_response_id="r0", judge_response_id="r1")
+            store.insert_score(
+                item_id=iid, round_n=1, score=score, solver_response_id="r0", judge_response_id="r1"
+            )
     out = store.scores_for_round(iid, 1)
     assert len(out) == 4
     assert {s.solver for s in out} == {"weak", "strong"}
@@ -328,6 +350,7 @@ def test_scores_for_round_round_trip(store: Store):
 # ---------------------------------------------------------------------------
 # accepted + export
 # ---------------------------------------------------------------------------
+
 
 def test_accepted_and_export_jsonl(store: Store, tmp_path: Path):
     iid1 = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_QUALITY")
@@ -358,6 +381,7 @@ def test_insert_accepted_idempotent_on_round(store: Store):
 # ---------------------------------------------------------------------------
 # resume normalization (§4.2)
 # ---------------------------------------------------------------------------
+
 
 def test_resume_in_flight_local_to_pending(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")

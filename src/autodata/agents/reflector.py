@@ -104,9 +104,7 @@ def parse_response(text: str) -> ReflectionResult:
         data = extract_json(text)
     except ValueError as e:
         logger.warning("reflector parse failure: {}", e)
-        return ReflectionResult(
-            feedback=["previous attempts failed; try a different angle"], new_angle=""
-        )
+        return ReflectionResult(feedback=["previous attempts failed; try a different angle"], new_angle="")
     return ReflectionResult(
         feedback=[str(x) for x in (data.get("feedback") or [])],
         new_angle=str(data.get("new_angle") or ""),

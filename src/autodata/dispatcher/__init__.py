@@ -4,6 +4,7 @@ The :class:`Dispatcher` runs the main loop; ``fulfill`` is a pluggable
 strategy. :func:`fulfill_local` (thread-pool) is the default; the batch
 variant lives in :mod:`autodata.dispatcher.batch`.
 """
+
 from __future__ import annotations
 
 from autodata.dispatcher.batch import (

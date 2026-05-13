@@ -3,6 +3,7 @@
 Drives a full Runner-equivalent loop using the MockBatchProvider, exercising
 submit → poll → fetch and the dispatcher's polling hook.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -65,12 +66,22 @@ def _make_dispatcher(store, docs_dir, tmp_path, provider) -> Dispatcher:
     store.create_run("r1", config=cfg.model_dump(mode="json"))
     grounding: dict[str, GroundingItem] = {}
     for item in domain.load_grounding():
-        store.insert_item(run_id="r1", source_id=item.source_id, domain=domain.name,
-                          state=State.PENDING.value, source_metadata=item.metadata)
+        store.insert_item(
+            run_id="r1",
+            source_id=item.source_id,
+            domain=domain.name,
+            state=State.PENDING.value,
+            source_metadata=item.metadata,
+        )
         grounding[item.source_id] = item
     return Dispatcher(
-        store=store, llm=LLMClient(), domain=domain, cfg=cfg, run_id="r1",
-        harness=DEFAULT_HARNESS, grounding=grounding,
+        store=store,
+        llm=LLMClient(),
+        domain=domain,
+        cfg=cfg,
+        run_id="r1",
+        harness=DEFAULT_HARNESS,
+        grounding=grounding,
         fulfill=make_fulfill_batch(provider),
         poll_in_flight=lambda d: poll_outstanding_batches(provider, d),
     )
@@ -80,15 +91,23 @@ def _make_dispatcher(store, docs_dir, tmp_path, provider) -> Dispatcher:
 # MockBatchProvider sanity
 # ---------------------------------------------------------------------------
 
+
 def test_mock_batch_provider_submit_complete_fetch():
     p = MockBatchProvider(ready_after_polls=2)
     from autodata.llm import LLMRequest
-    req = LLMRequest(request_id="x", item_id="i", round_n=1, role="weak",
-                     model_key="mock/scripted", messages=[{"role": "user", "content": "x"}])
+
+    req = LLMRequest(
+        request_id="x",
+        item_id="i",
+        round_n=1,
+        role="weak",
+        model_key="mock/scripted",
+        messages=[{"role": "user", "content": "x"}],
+    )
     handle = p.submit([req])
     assert isinstance(handle, BatchHandle)
-    assert not p.is_complete(handle.batch_id)   # poll 1
-    assert p.is_complete(handle.batch_id)       # poll 2
+    assert not p.is_complete(handle.batch_id)  # poll 1
+    assert p.is_complete(handle.batch_id)  # poll 2
     results = list(p.fetch(handle.batch_id))
     assert len(results) == 1
     assert isinstance(results[0], BatchResult)
@@ -98,6 +117,7 @@ def test_mock_batch_provider_submit_complete_fetch():
 # ---------------------------------------------------------------------------
 # End-to-end through Dispatcher
 # ---------------------------------------------------------------------------
+
 
 def test_dispatcher_drives_run_via_batch_provider(store, docs_dir, tmp_path):
     provider = MockBatchProvider(ready_after_polls=1)
@@ -113,24 +133,25 @@ def test_batch_id_is_tagged_then_cleared(store, docs_dir, tmp_path):
     disp = _make_dispatcher(store, docs_dir, tmp_path, provider)
     disp.run()
     # After completion, no request should remain tagged.
-    rows = store.conn.execute(
-        "SELECT COUNT(*) FROM requests WHERE batch_id IS NOT NULL"
-    ).fetchone()
+    rows = store.conn.execute("SELECT COUNT(*) FROM requests WHERE batch_id IS NOT NULL").fetchone()
     assert rows[0] == 0
 
 
 def test_batch_provider_failure_marks_request_failed(store, docs_dir, tmp_path):
     class FailingProvider:
         provider_name = "fail"
+
         def submit(self, requests):
             raise RuntimeError("provider down")
-        def is_complete(self, batch_id): return False
-        def fetch(self, batch_id): return []
+
+        def is_complete(self, batch_id):
+            return False
+
+        def fetch(self, batch_id):
+            return []
 
     disp = _make_dispatcher(store, docs_dir, tmp_path, FailingProvider())
     disp.run()
-    rows = store.conn.execute(
-        "SELECT status, failure_count FROM requests"
-    ).fetchall()
+    rows = store.conn.execute("SELECT status, failure_count FROM requests").fetchall()
     # All requests should have failed at least once.
     assert any(r["failure_count"] >= 1 for r in rows)

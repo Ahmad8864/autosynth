@@ -4,6 +4,7 @@ Real models go through LiteLLM; ``mock/*`` model strings dispatch to the
 in-process mock registry. Per-(provider, model) RPM is enforced via a token
 bucket; retries use tenacity with exponential backoff.
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -37,13 +38,15 @@ def _is_retryable(exc: BaseException) -> bool:
     except ImportError:
         return True
     deterministic = tuple(
-        cls for cls in (
+        cls
+        for cls in (
             getattr(litellm, "BadRequestError", None),
             getattr(litellm, "AuthenticationError", None),
             getattr(litellm, "UnsupportedParamsError", None),
             getattr(litellm, "NotFoundError", None),
             getattr(litellm, "PermissionDeniedError", None),
-        ) if cls is not None
+        )
+        if cls is not None
     )
     return not isinstance(exc, deterministic)
 
@@ -177,8 +180,9 @@ class LLMClient:
         try:
             resp = _call()
         except Exception as e:  # pragma: no cover - real network
-            logger.warning("LLM call failed after retries (role={}, model={}): {}",
-                           req.role, req.model_key, e)
+            logger.warning(
+                "LLM call failed after retries (role={}, model={}): {}", req.role, req.model_key, e
+            )
             raise
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 

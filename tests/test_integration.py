@@ -3,6 +3,7 @@
 Replaces the legacy ``test_full_loop.py``; same assertions, new architecture.
 The full pipeline runs against the in-process mock provider — zero API keys.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,7 @@ from autodata.runner import Runner, _build_llm_config
 from autodata.store import Store
 
 
-def _cfg(docs_dir: Path, output_dir: Path, scenario: str, *,
-         forbid_weak_zero: bool = False) -> RunConfig:
+def _cfg(docs_dir: Path, output_dir: Path, scenario: str, *, forbid_weak_zero: bool = False) -> RunConfig:
     return RunConfig(
         run_id="test-run",
         output_dir=str(output_dir),
@@ -105,23 +105,26 @@ def test_build_llm_config_collects_model_extras(sample_docs: Path, output_dir: P
     )
     # Two roles sharing the same provider_model — extras should merge.
     cfg.judge = ModelConfig(
-        provider_model="azure/shared", extra={"api_base": "https://shared.example"},
+        provider_model="azure/shared",
+        extra={"api_base": "https://shared.example"},
     )
     cfg.challenger = ModelConfig(
-        provider_model="azure/shared", extra={"api_version": "2024-02-01"},
+        provider_model="azure/shared",
+        extra={"api_version": "2024-02-01"},
     )
     cfg.metaopt = MetaOptConfig(
-        mutator=ModelConfig(provider_model="azure/mutator",
-                            extra={"api_base": "https://mutator.example"}),
+        mutator=ModelConfig(provider_model="azure/mutator", extra={"api_base": "https://mutator.example"}),
     )
 
     llm_cfg = _build_llm_config(cfg)
     assert llm_cfg.model_extras["azure/weak-dep"] == {
-        "api_base": "https://weak.example", "api_version": "2024-02-01",
+        "api_base": "https://weak.example",
+        "api_version": "2024-02-01",
     }
     assert llm_cfg.model_extras["azure/strong-dep"] == {"api_base": "https://strong.example"}
     assert llm_cfg.model_extras["azure/shared"] == {
-        "api_base": "https://shared.example", "api_version": "2024-02-01",
+        "api_base": "https://shared.example",
+        "api_version": "2024-02-01",
     }
     assert llm_cfg.model_extras["azure/mutator"] == {"api_base": "https://mutator.example"}
 
@@ -134,7 +137,8 @@ def test_build_llm_config_omits_models_with_no_extras(sample_docs: Path, output_
 
 
 def test_each_role_request_carries_its_configured_temperature(
-    sample_docs: Path, output_dir: Path,
+    sample_docs: Path,
+    output_dir: Path,
 ):
     """Regression guard: every role's persisted request must carry that
     role's configured temperature, not the challenger's.
@@ -156,9 +160,7 @@ def test_each_role_request_carries_its_configured_temperature(
     Runner(cfg).run()
 
     store = Store(output_dir / "test-run" / "run.db")
-    rows = store.conn.execute(
-        "SELECT role, temperature FROM requests"
-    ).fetchall()
+    rows = store.conn.execute("SELECT role, temperature FROM requests").fetchall()
     by_role: dict[str, set[float | None]] = {}
     for row in rows:
         by_role.setdefault(row["role"], set()).add(row["temperature"])
@@ -180,9 +182,7 @@ def test_each_role_request_carries_its_configured_temperature(
     for role in fired:
         want = expected[role]
         got = by_role[role]
-        assert got == {want}, (
-            f"role={role!r} expected temperature {want}, got {got}"
-        )
+        assert got == {want}, f"role={role!r} expected temperature {want}, got {got}"
 
 
 def test_export_jsonl_via_store(sample_docs: Path, output_dir: Path, tmp_path: Path):

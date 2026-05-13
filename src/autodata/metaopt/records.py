@@ -1,4 +1,5 @@
 """Record types persisted across meta-optimization iterations."""
+
 from __future__ import annotations
 
 from typing import Any

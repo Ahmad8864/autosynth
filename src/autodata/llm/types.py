@@ -3,6 +3,7 @@
 Kept separate from the client so other subpackages (store, dispatcher) can
 import these without pulling in litellm or the mock registry.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

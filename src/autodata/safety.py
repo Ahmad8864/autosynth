@@ -76,8 +76,6 @@ def load_filter(spec: str | None) -> SafetyFilter:
     try:
         inspect.signature(fn).bind("")
     except TypeError as e:
-        raise TypeError(
-            f"safety filter {spec!r} must accept one positional str argument: {e}"
-        ) from e
+        raise TypeError(f"safety filter {spec!r} must accept one positional str argument: {e}") from e
     # Signature accepts (str); return value still trusted at first call.
     return cast(SafetyFilter, fn)

@@ -11,6 +11,7 @@ main loop drives polling either way — and lets ``in_flight_count`` reflect
 real transient state for the progress bar, budget checks, and the
 concurrency cap in :meth:`Dispatcher._dispatch_pending`.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -48,7 +49,8 @@ def _one_request(req_row: RequestRow, dispatcher: Dispatcher) -> None:
         except Exception as e:
             logger.warning("request {} failed: {}", req_row.request_id, e)
             dispatcher.store.mark_request_failed(
-                req_row.request_id, str(e)[:500],
+                req_row.request_id,
+                str(e)[:500],
                 max_failures=dispatcher.cfg.dispatcher.max_request_failures,
             )
             return

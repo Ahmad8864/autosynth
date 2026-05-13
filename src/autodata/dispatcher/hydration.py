@@ -3,6 +3,7 @@
 Pure functions. No I/O beyond store reads. Keeping these out of the
 :class:`Dispatcher` class so the run loop stays focused on orchestration.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,8 +15,11 @@ from autodata.schemas import Candidate, EvalReport, QualityCheck, Round
 from autodata.store import RequestRow, Store
 
 _PLACEHOLDER_CANDIDATE = Candidate(
-    candidate_id="missing", domain="missing", source_id="missing",
-    payload={}, rubric=[],
+    candidate_id="missing",
+    domain="missing",
+    source_id="missing",
+    payload={},
+    rubric=[],
 )
 
 
@@ -56,11 +60,9 @@ def load_item_state(store: Store, item_row: sqlite3.Row) -> ItemState:
             except (json.JSONDecodeError, TypeError):
                 last_feedback = ()
 
-    source_metadata = (json.loads(item_row["source_metadata"])
-                       if item_row["source_metadata"] else {})
+    source_metadata = json.loads(item_row["source_metadata"]) if item_row["source_metadata"] else {}
     rejection_reasons = tuple(
-        json.loads(item_row["rejection_reasons"])
-        if item_row["rejection_reasons"] else []
+        json.loads(item_row["rejection_reasons"]) if item_row["rejection_reasons"] else []
     )
 
     return ItemState(
@@ -81,9 +83,7 @@ def load_item_state(store: Store, item_row: sqlite3.Row) -> ItemState:
     )
 
 
-def hydrate_responses(
-    store: Store, item_id: str, since_ts: str
-) -> tuple[list[StepResponse], str | None]:
+def hydrate_responses(store: Store, item_id: str, since_ts: str) -> tuple[list[StepResponse], str | None]:
     """Pull responses + matching request/parent fields in a single query.
 
     Returns ``(responses, max_received_at)``. The dispatcher uses the
@@ -95,16 +95,18 @@ def hydrate_responses(
     max_received_at: str | None = None
     for row in store.hydrate_responses(item_id, since_ts):
         is_judge = row["role"] == "judge" and row["parent_response_id"] is not None
-        out.append(StepResponse(
-            request_id=row["request_id"],
-            role=row["role"],
-            round_n=row["round_n"],
-            attempt=row["attempt"],
-            text=row["text"],
-            parent_response_id=row["parent_response_id"],
-            solver_response_text=(row["parent_text"] or "") if is_judge else None,
-            solver_role=row["parent_role"] if is_judge else None,
-        ))
+        out.append(
+            StepResponse(
+                request_id=row["request_id"],
+                role=row["role"],
+                round_n=row["round_n"],
+                attempt=row["attempt"],
+                text=row["text"],
+                parent_response_id=row["parent_response_id"],
+                solver_response_text=(row["parent_text"] or "") if is_judge else None,
+                solver_role=row["parent_role"] if is_judge else None,
+            )
+        )
         received_at = row["received_at"]
         if max_received_at is None or received_at > max_received_at:
             max_received_at = received_at
@@ -112,12 +114,9 @@ def hydrate_responses(
 
 
 def row_to_round(row) -> Round:
-    candidate = (Candidate.model_validate_json(row["candidate_blob"])
-                 if row["candidate_blob"] else None)
-    quality = (QualityCheck.model_validate_json(row["quality_blob"])
-               if row["quality_blob"] else None)
-    evaluation = (EvalReport.model_validate_json(row["eval_blob"])
-                  if row["eval_blob"] else None)
+    candidate = Candidate.model_validate_json(row["candidate_blob"]) if row["candidate_blob"] else None
+    quality = QualityCheck.model_validate_json(row["quality_blob"]) if row["quality_blob"] else None
+    evaluation = EvalReport.model_validate_json(row["eval_blob"]) if row["eval_blob"] else None
     # A historical round (round_n < current_round) always has a persisted
     # candidate; the placeholders here only matter for partially-written rows
     # observed mid-write during resume.

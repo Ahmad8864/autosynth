@@ -5,6 +5,7 @@ acceptance rate; ``aggregate_failures_from_db`` aggregates rejection reasons
 from the inner run's ``run.db`` so the mutator can address concrete failure
 modes.
 """
+
 from __future__ import annotations
 
 import json
@@ -66,9 +67,7 @@ def aggregate_failures_from_db(run_db_path: Path, *, sample_size: int = 3) -> di
                     key = f"quality:{str(f).split(':')[0]}"
                     reason_counts[key] = reason_counts.get(key, 0) + 1
                 if len(samples) < sample_size:
-                    samples.append(
-                        {"reason": "quality_failed", "failures": quality.get("failures") or []}
-                    )
+                    samples.append({"reason": "quality_failed", "failures": quality.get("failures") or []})
                 continue
             if ev is None or ev.get("accepted"):
                 continue
@@ -77,12 +76,14 @@ def aggregate_failures_from_db(run_db_path: Path, *, sample_size: int = 3) -> di
                 key = str(r).split(" ")[0]
                 reason_counts[key] = reason_counts.get(key, 0) + 1
             if len(samples) < sample_size:
-                samples.append({
-                    "reason": "; ".join(ev.get("rejection_reasons") or []),
-                    "weak_avg": ev.get("weak_avg"),
-                    "strong_avg": ev.get("strong_avg"),
-                    "gap": ev.get("gap"),
-                })
+                samples.append(
+                    {
+                        "reason": "; ".join(ev.get("rejection_reasons") or []),
+                        "weak_avg": ev.get("weak_avg"),
+                        "strong_avg": ev.get("strong_avg"),
+                        "gap": ev.get("gap"),
+                    }
+                )
         return {
             "total_rounds": total,
             "rejected_rounds": rejected,

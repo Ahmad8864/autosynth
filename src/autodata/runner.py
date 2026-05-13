@@ -5,6 +5,7 @@ PENDING items from the domain (unless resuming), builds the LLMClient and
 Dispatcher, then calls ``dispatcher.run()``. Resume is "open the same
 run.db with ``cfg.resume=True``".
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -41,9 +42,7 @@ class Runner:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(self.run_dir / "run.db")
 
-        self.domain: DomainAdapter = build_domain(
-            cfg.domain.name, cfg.domain.path, cfg.domain.params
-        )
+        self.domain: DomainAdapter = build_domain(cfg.domain.name, cfg.domain.path, cfg.domain.params)
         self.llm = LLMClient(_build_llm_config(cfg))
 
     def run(self) -> RunSummary:
@@ -53,13 +52,20 @@ class Runner:
         if not grounding:
             logger.warning("no grounding items; run is empty")
             return RunSummary(
-                run_id=self.run_id, accepted=0, rejected=0,
-                state_counts={}, cost_usd=0.0,
+                run_id=self.run_id,
+                accepted=0,
+                rejected=0,
+                state_counts={},
+                cost_usd=0.0,
             )
 
         dispatcher = Dispatcher(
-            store=self.store, llm=self.llm, domain=self.domain,
-            cfg=self.cfg, run_id=self.run_id, harness=self.harness,
+            store=self.store,
+            llm=self.llm,
+            domain=self.domain,
+            cfg=self.cfg,
+            run_id=self.run_id,
+            harness=self.harness,
             grounding=grounding,
         )
         return dispatcher.run()
@@ -76,15 +82,16 @@ class Runner:
     def _seed_items(self) -> dict[str, GroundingItem]:
         grounding: dict[str, GroundingItem] = {}
         for item in self.domain.load_grounding():
-            if (self.source_id_filter is not None
-                    and item.source_id not in self.source_id_filter):
+            if self.source_id_filter is not None and item.source_id not in self.source_id_filter:
                 continue
             if len(grounding) >= self.cfg.max_examples:
                 break
             grounding[item.source_id] = item
             self.store.insert_item(
-                run_id=self.run_id, source_id=item.source_id,
-                domain=self.domain.name, state=ITEM_PENDING,
+                run_id=self.run_id,
+                source_id=item.source_id,
+                domain=self.domain.name,
+                state=ITEM_PENDING,
                 source_metadata=item.metadata,
             )
         return grounding

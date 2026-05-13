@@ -1,4 +1,5 @@
 """RPM rate limiting via a thread-safe token bucket."""
+
 from __future__ import annotations
 
 import threading
@@ -21,9 +22,13 @@ class TokenBucket:
     The clock and sleep functions are injectable for deterministic tests.
     """
 
-    def __init__(self, rate_per_sec: float, burst: int,
-                 clock: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], None] = time.sleep):
+    def __init__(
+        self,
+        rate_per_sec: float,
+        burst: int,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ):
         if rate_per_sec <= 0:
             raise ValueError("rate_per_sec must be positive")
         if burst < 1:

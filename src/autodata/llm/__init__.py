@@ -13,6 +13,7 @@ to :meth:`LLMClient.complete`, which returns a :class:`Response`. Mock
 scenarios are registered via :func:`register_mock` and addressable as the
 ``mock/<scenario>`` model string.
 """
+
 from __future__ import annotations
 
 from autodata.llm.client import LLMClient, LLMConfig

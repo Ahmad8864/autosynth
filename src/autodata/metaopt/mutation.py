@@ -5,6 +5,7 @@ the mutator never emits Python source. Out-of-range indices, wrong types,
 and unknown keys are silently dropped so a malformed mutator response can
 never crash the loop.
 """
+
 from __future__ import annotations
 
 import json
@@ -47,8 +48,12 @@ class Mutator:
     )
 
     def __init__(
-        self, llm: LLMClient, model_key: str,
-        *, temperature: float | None = None, max_tokens: int | None = None,
+        self,
+        llm: LLMClient,
+        model_key: str,
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ):
         self.llm = llm
         self.model_key = model_key
@@ -65,8 +70,9 @@ class Mutator:
             },
             indent=2,
         )
-        request_id = stable_id("metaopt-mutator", parent.harness_id,
-                               parent.iteration, json.dumps(failure_summary)[:200])
+        request_id = stable_id(
+            "metaopt-mutator", parent.harness_id, parent.iteration, json.dumps(failure_summary)[:200]
+        )
         request = LLMRequest(
             request_id=request_id,
             item_id="metaopt",

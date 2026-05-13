@@ -5,6 +5,7 @@ own module so the schema can be read top-to-bottom without scrolling past
 ~600 lines of methods, and so other subpackages that only need the constants
 (``REQ_PENDING``, ``ITEM_ACCEPTED``, etc.) don't have to import the DAO class.
 """
+
 from __future__ import annotations
 
 import json
