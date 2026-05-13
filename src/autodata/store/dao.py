@@ -150,9 +150,17 @@ class Store:
                     state: str | None = None,
                     current_round: int | None = None,
                     final_round: int | None = None,
-                    rejection_reasons: list[str] | None = None) -> None:
+                    rejection_reasons: list[str] | None = None,
+                    updated_at: str | None = None) -> None:
+        """Update an item row.
+
+        ``updated_at`` defaults to ``_utcnow()``. The dispatcher passes an
+        explicit value (the max received_at of just-consumed responses) when
+        advancing items so concurrently-arriving worker responses aren't
+        masked by a forward-jumping watermark. See ``insert_response``.
+        """
         sets: list[str] = ["updated_at = ?"]
-        vals: list[Any] = [_utcnow()]
+        vals: list[Any] = [updated_at if updated_at is not None else _utcnow()]
         if state is not None:
             sets.append("state = ?")
             vals.append(state)
@@ -459,8 +467,13 @@ class Store:
 
         Idempotent on request_id (skipped if a response row already exists).
         """
-        now = _utcnow()
+        # Timestamp captured inside the tx so received_at values are strictly
+        # monotonic with commit order (BEGIN IMMEDIATE serializes writers).
+        # The dispatcher relies on this when setting an item's updated_at to
+        # ``max(received_at)`` of consumed responses — any worker row that
+        # committed concurrently is guaranteed to have received_at > that.
         with self.tx() as cur:
+            now = _utcnow()
             existing = cur.execute(
                 "SELECT 1 FROM responses WHERE response_id=?", (request_id,)
             ).fetchone()
@@ -516,6 +529,7 @@ class Store:
                       q.round_n                AS round_n,
                       q.attempt                AS attempt,
                       r.text                   AS text,
+                      r.received_at            AS received_at,
                       q.parent_response_id     AS parent_response_id,
                       pq.role                  AS parent_role,
                       pr.text                  AS parent_text

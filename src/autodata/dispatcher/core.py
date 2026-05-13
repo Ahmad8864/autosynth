@@ -19,7 +19,6 @@ import contextlib
 import json
 import signal
 import threading
-import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -91,6 +90,9 @@ class Dispatcher:
             load_filter(cfg.safety.filter) if cfg.safety.enabled else None
         )
         self._stop = threading.Event()
+        # Workers set this after posting a response so the main loop can
+        # wake immediately instead of waiting out the poll interval.
+        self._work_ready = threading.Event()
         self._installed_handlers: list = []
         self._pool: ThreadPoolExecutor | None = None
         self._budget_warned = False
@@ -132,18 +134,30 @@ class Dispatcher:
             self._mark_unrecoverable_items()
             in_flight = self.store.in_flight_count(self.run_id)
             self._refresh_progress(in_flight=in_flight)
-            if not advanced and not dispatched and not polled and in_flight == 0:
-                if not self.store.has_non_terminal_items(self.run_id):
-                    break
-                if self.store.pending_count(self.run_id) == 0:
-                    # Items are non-terminal but nothing is queued or in flight —
-                    # break out instead of spinning on a stuck state.
-                    logger.warning(
-                        "dispatcher idle but non-terminal items remain; states={}",
-                        self.store.items_terminal_counts(self.run_id),
-                    )
-                    break
-                time.sleep(self.cfg.dispatcher.poll_interval_s)
+            if not advanced and not dispatched and not polled:
+                if in_flight == 0:
+                    # A worker may have committed a response between our
+                    # ``items_ready_to_advance`` query above and now. Since
+                    # ``in_flight_count == 0`` proves no workers are still
+                    # running, any such write is now visible — re-check
+                    # before deciding to break.
+                    if self.store.items_ready_to_advance(self.run_id, limit=1):
+                        continue
+                    if not self.store.has_non_terminal_items(self.run_id):
+                        break
+                    if self.store.pending_count(self.run_id) == 0:
+                        # Non-terminal items remain but nothing is queued or in
+                        # flight — break out instead of spinning on stuck state.
+                        logger.warning(
+                            "dispatcher idle but non-terminal items remain; states={}",
+                            self.store.items_terminal_counts(self.run_id),
+                        )
+                        break
+                # Idle this tick: block until a worker posts a response or
+                # the poll interval elapses. Workers set _work_ready in
+                # ``notify``; the signal handler sets it on stop too.
+                self._work_ready.wait(self.cfg.dispatcher.poll_interval_s)
+                self._work_ready.clear()
             if self._budget_exceeded():
                 logger.warning("budget exceeded; aborting run")
                 self.store.update_run_status(self.run_id, RUN_STATUS_ABORTED)
@@ -161,7 +175,9 @@ class Dispatcher:
 
     def _advance_one(self, item_row) -> None:
         item_state = load_item_state(self.store, item_row)
-        responses = hydrate_responses(self.store, item_row["item_id"], item_row["updated_at"])
+        responses, consumed_watermark = hydrate_responses(
+            self.store, item_row["item_id"], item_row["updated_at"]
+        )
         grounding = self.grounding.get(item_state.source_id)
         if grounding is None:
             logger.error(
@@ -183,9 +199,11 @@ class Dispatcher:
         except Exception:
             logger.exception("pipeline step crashed for item {}", item_state.item_id)
             return
-        self._persist_step_result(result)
+        self._persist_step_result(result, consumed_watermark=consumed_watermark)
 
-    def _persist_step_result(self, result: StepResult) -> None:
+    def _persist_step_result(
+        self, result: StepResult, *, consumed_watermark: str | None = None,
+    ) -> None:
         new_state = result.state
         completed = result.completed_round
 
@@ -260,11 +278,22 @@ class Dispatcher:
                 list(new_state.rejection_reasons) or None
                 if new_state.state == State.REJECTED else None
             ),
+            # Pin updated_at to the max received_at of consumed responses so
+            # worker rows committed concurrently with this step (and thus
+            # invisible to our hydrate snapshot) aren't masked by a
+            # forward-jumping watermark. ``None`` for state transitions that
+            # didn't consume responses (e.g. the PENDING-first-step path).
+            updated_at=consumed_watermark,
         )
 
     def _dispatch_pending(self) -> int:
-        claim_limit = max(1, self.cfg.dispatcher.concurrency)
-        claimed = self.store.claim_pending(limit=claim_limit)
+        # Cap claims by available headroom so the worker pool's queue can't
+        # grow unbounded under async fulfillment. ``concurrency`` doubles as
+        # the pool's max_workers, so this bounds true parallelism honestly.
+        headroom = self.cfg.dispatcher.concurrency - self.store.in_flight_count(self.run_id)
+        if headroom <= 0:
+            return 0
+        claimed = self.store.claim_pending(limit=headroom)
         if not claimed:
             return 0
         self.fulfill(claimed, self)
@@ -305,10 +334,16 @@ class Dispatcher:
             self._budget_warned = True
         return False
 
+    def notify(self) -> None:
+        """Wake the main loop. Workers call this after posting a response."""
+        self._work_ready.set()
+
     def _install_signal_handlers(self) -> None:
         def handler(signum, frame):
             logger.warning("received signal {}; finishing in-flight then exiting", signum)
             self._stop.set()
+            # Cut through any in-progress idle wait so we exit promptly.
+            self._work_ready.set()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 prev = signal.signal(sig, handler)

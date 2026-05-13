@@ -81,9 +81,18 @@ def load_item_state(store: Store, item_row: sqlite3.Row) -> ItemState:
     )
 
 
-def hydrate_responses(store: Store, item_id: str, since_ts: str) -> list[StepResponse]:
-    """Pull responses + matching request/parent fields in a single query."""
+def hydrate_responses(
+    store: Store, item_id: str, since_ts: str
+) -> tuple[list[StepResponse], str | None]:
+    """Pull responses + matching request/parent fields in a single query.
+
+    Returns ``(responses, max_received_at)``. The dispatcher uses the
+    second value as the item's new ``updated_at`` so it strictly bounds the
+    set of responses just consumed without jumping past worker rows that
+    committed concurrently. ``None`` when no rows matched.
+    """
     out: list[StepResponse] = []
+    max_received_at: str | None = None
     for row in store.hydrate_responses(item_id, since_ts):
         is_judge = row["role"] == "judge" and row["parent_response_id"] is not None
         out.append(StepResponse(
@@ -96,7 +105,10 @@ def hydrate_responses(store: Store, item_id: str, since_ts: str) -> list[StepRes
             solver_response_text=(row["parent_text"] or "") if is_judge else None,
             solver_role=row["parent_role"] if is_judge else None,
         ))
-    return out
+        received_at = row["received_at"]
+        if max_received_at is None or received_at > max_received_at:
+            max_received_at = received_at
+    return out, max_received_at
 
 
 def row_to_round(row) -> Round:
