@@ -1,76 +1,57 @@
-# Contributing to autodata
+# Contributing
 
-Thanks for your interest in helping build autodata. This document covers how
-to set up a dev environment, the standards we expect from changes, and the
-two highest-leverage ways to contribute: adding a domain plugin or sharpening
-the orchestrator's behavior.
-
-## Dev setup
+## Setup
 
 ```bash
 uv venv
 uv pip install -e ".[dev]"
 ```
 
-Activate with `source .venv/bin/activate`, or prefix commands with `uv run`.
-Python ≥ 3.10 is required.
+Activate with `source .venv/bin/activate`, or just prefix things with `uv run`. Needs Python 3.10+.
 
-## Running the test suite
+## Tests
 
 ```bash
 uv run pytest
 ```
 
-All tests run against the in-process `MockLLMProvider`, so you do **not** need
-any API keys to verify your change. If your change adds real-provider
-behavior, gate it behind a test that uses `register_mock(...)` to script the
-expected provider response.
+Tests use an in-process mock LLM, so no API keys needed. If you're adding real-provider behavior, script the response with `register_mock(...)` in your test.
 
-## Lint / format
+## Lint and format
 
 ```bash
 uv run ruff check .
 uv run ruff format .
 ```
 
-The CI workflow runs both on every PR. Configuration lives in `pyproject.toml`
-under `[tool.ruff]`.
+Both run in CI. Config is in `pyproject.toml`.
 
-## What we look for in a PR
+## Before you open a PR
 
-- **Tests for behavior changes.** A bug fix should add the test that would
-  have caught it; a feature should ship with at least one happy-path test.
-- **No new third-party dependencies in the core path.** The mock demo must
-  keep working with zero network access. Heavy deps belong under an optional
-  extra (see `pyproject.toml` `[project.optional-dependencies]`).
-- **Domain-agnostic core.** Anything domain-specific belongs in a
-  `DomainAdapter`, never in `orchestrator.py` / `evaluator.py` / `writer.py`.
-- **Public API hygiene.** New symbols intended for users should be added to
-  `src/autodata/__init__.py` and have a one-line docstring.
+- Add a test for the thing you changed. Bug fixes get the test that would've caught the bug.
+- Don't add new core dependencies. The mock demo needs to keep working offline. Heavy stuff goes under an optional extra.
+- Keep the core domain-agnostic. Domain-specific code goes in a `DomainAdapter`, not in `orchestrator.py` / `evaluator.py` / `writer.py`.
+- New public symbols go in `src/autodata/__init__.py` with a one-line docstring.
 
 ## Adding a domain
 
-The fastest path: scaffold and edit.
+Scaffold one and fill it in:
 
 ```bash
 uv run autodata init-domain my_domain --out my_domain.py
 ```
 
-Then implement the six abstract methods and reference the file from your YAML
-config (see `README.md` "Creating a new domain"). The bundled examples
-(`src/autodata/domains/qa_from_documents.py`,
-`src/autodata/domains/math_word_problems.py`) show the patterns.
+Implement the six abstract methods, then point your YAML config at the file (see the README). `src/autodata/domains/qa_from_documents.py` and `math_word_problems.py` are good references.
 
-## Reporting bugs / asking questions
+## Bugs and questions
 
-Open a GitHub issue. Please include:
+Open a GitHub issue. Helpful things to include:
 
-- Your config (with secrets redacted)
-- The `summary.json` from the failing run
-- One trajectory file from `outputs/<run_id>/trajectories/` if relevant
+- Your config (redact secrets)
+- `summary.json` from the failing run
+- A trajectory file from `outputs/<run_id>/trajectories/` if it's relevant
 - Python version and `uv pip freeze | grep -E 'autodata|litellm|pydantic'`
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the
-Apache License 2.0 (see `LICENSE`).
+Contributions are licensed under MIT (see `LICENSE`).

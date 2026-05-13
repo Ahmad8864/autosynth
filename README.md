@@ -180,4 +180,4 @@ The full suite (~130 tests) runs against the in-process mock provider — no key
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+MIT. See `LICENSE`.
