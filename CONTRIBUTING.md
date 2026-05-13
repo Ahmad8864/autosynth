@@ -26,6 +26,16 @@ uv run ruff format .
 
 Both run in CI. Config is in `pyproject.toml`.
 
+## Pre-commit hooks
+
+After cloning, install the hooks once:
+
+```bash
+uv run pre-commit install
+```
+
+That wires up ruff (lint + format), file hygiene checks (trailing whitespace, large files, YAML/TOML syntax), and gitleaks secret scanning. They fire on every `git commit`. Run against the whole tree on demand with `uv run pre-commit run --all-files`.
+
 ## Before you open a PR
 
 - Add a test for the thing you changed. Bug fixes get the test that would've caught the bug.

@@ -42,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 hf = ["datasets>=2.18", "pyarrow>=15"]
-dev = ["pytest>=8", "pytest-mock>=3.12", "ruff>=0.4"]
+dev = ["pytest>=8", "pytest-mock>=3.12", "ruff>=0.4", "pre-commit>=4"]
 
 [project.urls]
 Repository = "https://github.com/Ahmad8864/autosynth"
