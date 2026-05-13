@@ -296,8 +296,9 @@ class Store:
     def insert_requests(self, requests: Iterable[dict]) -> int:
         """Bulk-insert requests, all in 'pending' status.
 
-        Each dict must have: request_id, item_id, round_n, role, model_key,
-        attempt, messages, json_mode; optional: parent_response_id.
+        Required keys: request_id, item_id, round_n, role, model_key, attempt,
+        messages, json_mode. Optional: parent_response_id, temperature,
+        max_tokens.
         """
         rows = list(requests)
         if not rows:
@@ -306,13 +307,15 @@ class Store:
             cur.executemany(
                 """INSERT OR IGNORE INTO requests
                    (request_id, item_id, round_n, role, model_key, attempt,
-                    messages_blob, json_mode, parent_response_id, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    messages_blob, json_mode, parent_response_id, status,
+                    temperature, max_tokens)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (r["request_id"], r["item_id"], r["round_n"], r["role"],
                      r["model_key"], r.get("attempt", 0),
                      _dumps(r["messages"]), 1 if r.get("json_mode") else 0,
-                     r.get("parent_response_id"), REQ_PENDING)
+                     r.get("parent_response_id"), REQ_PENDING,
+                     r.get("temperature"), r.get("max_tokens"))
                     for r in rows
                 ],
             )
@@ -408,14 +411,35 @@ class Store:
         )
         return [row["request_id"] for row in cur.fetchall()]
 
-    def mark_request_failed(self, request_id: str, error: str) -> RequestRow:
+    def mark_request_failed(
+        self, request_id: str, error: str, *, max_failures: int,
+    ) -> RequestRow:
+        """Record a failed attempt and decide the next status atomically.
+
+        While the incremented count is still below ``max_failures``, the
+        request goes back to PENDING (with ``completed_at`` cleared) so the
+        dispatcher loop will retry it on the next tick. At the cap it
+        terminates as FAILED; ``unrecoverable_items`` then drives the owning
+        item to REJECTED with the same ``last_error`` text.
+        """
+        now = _utcnow()
         with self.tx() as cur:
             cur.execute(
-                """UPDATE requests SET status=?, failure_count=failure_count+1,
-                                       last_error=?, completed_at=?
-                   WHERE request_id=?
+                """UPDATE requests
+                   SET failure_count = failure_count + 1,
+                       last_error = ?,
+                       status = CASE
+                           WHEN failure_count + 1 >= ? THEN ?
+                           ELSE ?
+                       END,
+                       completed_at = CASE
+                           WHEN failure_count + 1 >= ? THEN ?
+                           ELSE NULL
+                       END
+                   WHERE request_id = ?
                    RETURNING *""",
-                (REQ_FAILED, error, _utcnow(), request_id),
+                (error, max_failures, REQ_FAILED, REQ_PENDING,
+                 max_failures, now, request_id),
             )
             row = cur.fetchone()
             if row is None:
@@ -628,16 +652,29 @@ class Store:
             counts["failed_to_pending"] = cur.rowcount
         return counts
 
-    def unrecoverable_items(self, run_id: str, max_request_failures: int) -> list[str]:
-        """Items owning a request that has hit the failure cap."""
+    def unrecoverable_items(
+        self, run_id: str, max_request_failures: int,
+    ) -> list[tuple[str, str | None]]:
+        """Items owning a request that has hit the failure cap.
+
+        Returns ``[(item_id, last_error), ...]``. ``last_error`` is the
+        truncated error text from the request that exceeded the cap — the
+        dispatcher folds it into the item's ``rejection_reasons`` so callers
+        can see *why* an item failed without digging into the requests table.
+        Where one item owns multiple capped requests, an arbitrary error wins;
+        that's fine since one fatal error is enough to reject the item.
+        """
         cur = self.conn.execute(
-            f"""SELECT DISTINCT i.item_id FROM items i
+            f"""SELECT i.item_id AS item_id,
+                      MAX(q.last_error) AS last_error
+               FROM items i
                JOIN requests q ON q.item_id = i.item_id
                WHERE i.run_id = ? AND q.status = ? AND q.failure_count >= ?
-                 AND i.state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})""",
+                 AND i.state NOT IN ({','.join('?' * len(TERMINAL_ITEM_STATES))})
+               GROUP BY i.item_id""",
             (run_id, REQ_FAILED, max_request_failures, *TERMINAL_ITEM_STATES),
         )
-        return [row["item_id"] for row in cur.fetchall()]
+        return [(row["item_id"], row["last_error"]) for row in cur.fetchall()]
 
     def failure_rounds(self, run_id: str) -> list[sqlite3.Row]:
         """Rows for failure aggregation: candidate, quality, evaluation, accepted."""

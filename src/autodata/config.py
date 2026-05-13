@@ -36,10 +36,14 @@ class ModelConfig(BaseModel):
     """Per-role model settings. `provider_model` is a LiteLLM model string,
     e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5`,
     `together_ai/meta-llama/...`, `ollama/llama3`, or `mock/scripted`.
+
+    `temperature=None` means "don't send a temperature param" — the provider
+    uses its own default. This keeps the framework opinion-free across models
+    with different value constraints (e.g. reasoning models that pin temp=1).
     """
 
     provider_model: str = "mock/scripted"
-    temperature: float = 0.7
+    temperature: float | None = None
     max_tokens: int = 2048
     top_p: float = 1.0
     extra: dict[str, Any] = Field(default_factory=dict)

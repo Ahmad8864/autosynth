@@ -72,7 +72,11 @@ CREATE TABLE requests (
     completed_at       TEXT,
     batch_id           TEXT,
     failure_count      INTEGER NOT NULL DEFAULT 0,
-    last_error         TEXT
+    last_error         TEXT,
+    -- Per-call sampling values from the role's ModelConfig at build time.
+    -- Persisted so resume reproduces the original call exactly.
+    temperature        REAL,
+    max_tokens         INTEGER
 );
 CREATE INDEX requests_status ON requests(status);
 CREATE INDEX requests_item ON requests(item_id, round_n);

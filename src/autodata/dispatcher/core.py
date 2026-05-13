@@ -275,12 +275,12 @@ class Dispatcher:
 
     def _mark_unrecoverable_items(self) -> None:
         cap = self.cfg.dispatcher.max_request_failures
-        for item_id in self.store.unrecoverable_items(self.run_id, cap):
-            logger.warning("item {} hit failure cap; marking REJECTED", item_id)
+        for item_id, last_error in self.store.unrecoverable_items(self.run_id, cap):
+            reason = f"unrecoverable after {cap} attempts: {last_error or 'unknown error'}"
+            logger.warning("item {} hit failure cap; marking REJECTED ({})",
+                           item_id, last_error or "no error recorded")
             self.store.update_item(
-                item_id,
-                state=ITEM_REJECTED,
-                rejection_reasons=[f"unrecoverable: request failed {cap} times"],
+                item_id, state=ITEM_REJECTED, rejection_reasons=[reason],
             )
 
     def _budget_exceeded(self) -> bool:

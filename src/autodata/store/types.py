@@ -29,6 +29,8 @@ class RequestRow:
     batch_id: str | None
     failure_count: int
     last_error: str | None
+    temperature: float | None
+    max_tokens: int | None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> RequestRow:
@@ -48,6 +50,8 @@ class RequestRow:
             batch_id=row["batch_id"],
             failure_count=row["failure_count"],
             last_error=row["last_error"],
+            temperature=row["temperature"],
+            max_tokens=row["max_tokens"],
         )
 
 

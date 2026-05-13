@@ -207,7 +207,10 @@ def test_real_dispatch_computes_cost(monkeypatch):
     assert cost_calls == [fake]
     assert resp.cost_usd == pytest.approx(0.000045, rel=1e-6)
     assert calls[0]["model"] == "openai/gpt-4o-mini"
-    assert calls[0]["temperature"] == 0.7  # default
+    # Request didn't carry a temperature, so the client omits it and the
+    # provider's own default applies.
+    assert "temperature" not in calls[0]
+    assert "max_tokens" not in calls[0]
 
 
 def test_real_dispatch_cost_none_when_litellm_raises(monkeypatch):
@@ -272,13 +275,13 @@ def test_real_dispatch_passes_json_mode_and_overrides(monkeypatch):
     import litellm
     monkeypatch.setattr(litellm, "completion", fake_completion)
 
-    client = LLMClient(LLMConfig(default_temperature=0.5, default_max_tokens=1024))
+    client = LLMClient()
     req = LLMRequest(request_id="r-2", item_id="i", round_n=1, role="judge",
                      model_key="openai/gpt-4o", messages=[{"role": "user", "content": "x"}],
                      json_mode=True, temperature=0.0, max_tokens=512)
     client.complete(req)
     kwargs = captured[0]
-    assert kwargs["temperature"] == 0.0          # request override wins
+    assert kwargs["temperature"] == 0.0
     assert kwargs["max_tokens"] == 512
     assert kwargs["response_format"] == {"type": "json_object"}
 
@@ -336,8 +339,8 @@ def test_real_dispatch_unset_model_extras_is_noop(monkeypatch):
                      model_key="openai/gpt-4o-mini",
                      messages=[{"role": "user", "content": "x"}])
     client.complete(req)
-    # Only the canonical keys — no surprise extras keys were added.
-    assert set(captured[0].keys()) == {"model", "messages", "temperature", "max_tokens", "timeout"}
+    # No sampling params on the request → none in kwargs. Provider defaults apply.
+    assert set(captured[0].keys()) == {"model", "messages", "timeout"}
 
 
 def test_real_dispatch_retries_on_transient_failure(monkeypatch):

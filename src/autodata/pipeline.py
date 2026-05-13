@@ -25,7 +25,7 @@ from autodata.agents import challenger as challenger_agent
 from autodata.agents import reflector as reflector_agent
 from autodata.agents import solver as solver_agent
 from autodata.agents import verifier as verifier_agent
-from autodata.config import RunConfig
+from autodata.config import ModelConfig, RunConfig
 from autodata.domain import DomainAdapter, GroundingItem
 from autodata.evaluator import evaluate
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec
@@ -120,9 +120,23 @@ _ROLE_TO_CFG_ATTR: dict[str, str] = {
 }
 
 
+def _model_cfg_for(cfg: RunConfig, role: str) -> ModelConfig:
+    return getattr(cfg, _ROLE_TO_CFG_ATTR[role])
+
+
 def model_key_for(cfg: RunConfig, role: str) -> str:
     """Look up the configured provider model for a pipeline role."""
-    return getattr(cfg, _ROLE_TO_CFG_ATTR[role]).provider_model
+    return _model_cfg_for(cfg, role).provider_model
+
+
+def _dispatch_kwargs(cfg: RunConfig, role: str) -> dict:
+    """Per-role provider/sampling kwargs, ready to splat into a build_request call."""
+    mc = _model_cfg_for(cfg, role)
+    return {
+        "model_key": mc.provider_model,
+        "temperature": mc.temperature,
+        "max_tokens": mc.max_tokens,
+    }
 
 
 def step(
@@ -161,7 +175,7 @@ def _emit_challenger(item, cfg, harness, domain, grounding) -> StepResult:
     req = challenger_agent.build_request(
         item_id=item.item_id,
         round_n=item.current_round,
-        model_key=model_key_for(cfg, "challenger"),
+        **_dispatch_kwargs(cfg, "challenger"),
         grounding=grounding,
         feedback=list(item.last_feedback),
         prior_payloads=[r.candidate.payload for r in item.rounds_history],
@@ -215,7 +229,7 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
 
     qreq = verifier_agent.build_quality_request(
         item_id=item.item_id, round_n=item.current_round,
-        model_key=model_key_for(cfg, "quality"),
+        **_dispatch_kwargs(cfg, "quality"),
         candidate=candidate, domain=domain, harness=harness,
     )
     new_state = replace(item, state=State.NEED_QUALITY, candidate=candidate)
@@ -247,7 +261,7 @@ def _build_solver_requests(item, cfg, harness, domain):
         for k in range(n):
             yield solver_agent.build_request(
                 item_id=item.item_id, round_n=item.current_round, attempt=k,
-                model_key=model_key_for(cfg, role),
+                **_dispatch_kwargs(cfg, role),
                 candidate=item.candidate, role=role, domain=domain, harness=harness,
             )
 
@@ -292,7 +306,7 @@ def _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain) -> list[L
             continue
         out.append(verifier_agent.build_judge_request(
             item_id=item.item_id, round_n=item.current_round, attempt=r.attempt,
-            model_key=model_key_for(cfg, "judge"),
+            **_dispatch_kwargs(cfg, "judge"),
             candidate=item.candidate, solver_response=r.text,
             solver_role=r.role, domain=domain, harness=harness,
             parent_response_id=r.request_id,
@@ -359,7 +373,7 @@ def _finalize_scored_round(
     if item.current_round < cfg.loop.max_rounds:
         rreq = reflector_agent.build_request(
             item_id=item.item_id, round_n=item.current_round,
-            model_key=model_key_for(cfg, "reflector"),
+            **_dispatch_kwargs(cfg, "reflector"),
             prior_rounds=list(rounds_history),
             domain_name=domain.name, leakage_rules=domain.leakage_rules(),
             acceptance=cfg.acceptance, harness=harness,
@@ -429,7 +443,7 @@ def _go_to_reflection_or_reject(
     if item.current_round < cfg.loop.max_rounds:
         rreq = reflector_agent.build_request(
             item_id=item.item_id, round_n=item.current_round,
-            model_key=model_key_for(cfg, "reflector"),
+            **_dispatch_kwargs(cfg, "reflector"),
             prior_rounds=list(rounds_history),
             domain_name=domain.name, leakage_rules=domain.leakage_rules(),
             acceptance=cfg.acceptance, harness=harness,

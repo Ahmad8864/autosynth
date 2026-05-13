@@ -46,9 +46,14 @@ class Mutator:
         "Add NEW rules, not paraphrases of existing ones. Keep rule strings imperative and specific."
     )
 
-    def __init__(self, llm: LLMClient, model_key: str):
+    def __init__(
+        self, llm: LLMClient, model_key: str,
+        *, temperature: float | None = None, max_tokens: int | None = None,
+    ):
         self.llm = llm
         self.model_key = model_key
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
     def propose(self, parent: HarnessSpec, failure_summary: dict[str, Any]) -> dict[str, Any]:
         user = json.dumps(
@@ -73,6 +78,8 @@ class Mutator:
                 {"role": "user", "content": user},
             ],
             json_mode=True,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
         )
         try:
             resp = self.llm.complete(request)

@@ -53,6 +53,8 @@ def build_request(
     item_id: str,
     round_n: int,
     model_key: str,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     prior_rounds: list[Round],
     domain_name: str,
     leakage_rules: list[str],
@@ -91,6 +93,8 @@ def build_request(
         model_key=model_key,
         messages=messages,
         json_mode=True,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
 
 

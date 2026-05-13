@@ -130,6 +130,8 @@ def request_to_row(r: LLMRequest) -> dict:
         "messages": r.messages,
         "json_mode": r.json_mode,
         "parent_response_id": r.parent_response_id,
+        "temperature": r.temperature,
+        "max_tokens": r.max_tokens,
     }
 
 
@@ -145,6 +147,8 @@ def row_to_llm_request(r: RequestRow) -> LLMRequest:
         json_mode=r.json_mode,
         attempt=r.attempt,
         parent_response_id=r.parent_response_id,
+        temperature=r.temperature,
+        max_tokens=r.max_tokens,
     )
 
 

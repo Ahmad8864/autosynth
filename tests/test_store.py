@@ -254,14 +254,35 @@ def test_pending_request_ids_for_item(store: Store):
     assert set(ids) == {"q2"}     # q1 is done; q2 still pending
 
 
-def test_mark_request_failed_increments_count(store: Store):
+def test_mark_request_failed_requeues_below_cap(store: Store):
+    """Within-run retries: under the cap, the request goes back to PENDING
+    so the dispatcher loop picks it up on the next tick. completed_at stays
+    null because the request isn't done — it's just paused between attempts."""
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
     store.claim_pending(1)
-    row = store.mark_request_failed("q1", "timeout")
-    assert row.status == REQ_FAILED
+    row = store.mark_request_failed("q1", "timeout", max_failures=3)
+    assert row.status == REQ_PENDING
     assert row.failure_count == 1
     assert row.last_error == "timeout"
+    assert row.completed_at is None
+
+
+def test_mark_request_failed_terminates_at_cap(store: Store):
+    """At the cap, the request transitions to FAILED with completed_at set;
+    the owning item then surfaces through unrecoverable_items with the error."""
+    iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
+    store.insert_requests([_request(iid, request_id="q1")])
+    store.claim_pending(1)
+    for _ in range(2):
+        store.mark_request_failed("q1", "deterministic", max_failures=3)
+    row = store.mark_request_failed("q1", "deterministic", max_failures=3)
+    assert row.status == REQ_FAILED
+    assert row.failure_count == 3
+    assert row.completed_at is not None
+    assert store.unrecoverable_items("r1", max_request_failures=3) == [
+        (iid, "deterministic"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -369,10 +390,18 @@ def test_resume_done_without_response_reverts_to_pending(store: Store):
 
 
 def test_resume_failed_under_cap_reverts_to_pending(store: Store):
+    """A request that crashed in the FAILED state (e.g. process killed mid-write)
+    is reset to PENDING on resume so the dispatcher can pick it up again."""
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
     store.claim_pending(1)
-    store.mark_request_failed("q1", "transient")   # failure_count = 1
+    # Force the FAILED state directly: in-run, mark_request_failed would
+    # requeue under-cap requests itself.
+    with store.tx() as cur:
+        cur.execute(
+            "UPDATE requests SET status=?, failure_count=1 WHERE request_id='q1'",
+            (REQ_FAILED,),
+        )
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["failed_to_pending"] == 1
     assert store.get_request("q1").status == REQ_PENDING
@@ -383,16 +412,9 @@ def test_resume_failed_at_cap_stays_failed(store: Store):
     store.insert_requests([_request(iid, request_id="q1")])
     store.claim_pending(1)
     for _ in range(3):
-        store.mark_request_failed("q1", "err")
-        if store.get_request("q1").status == REQ_FAILED:
-            # re-mark-failed only legal while pending/in_flight; reset for the test
-            with store.tx() as cur:
-                cur.execute("UPDATE requests SET status=? WHERE request_id='q1'", (REQ_IN_FLIGHT,))
-    # Put it back to failed for the actual scenario
-    with store.tx() as cur:
-        cur.execute("UPDATE requests SET status=? WHERE request_id='q1'", (REQ_FAILED,))
+        store.mark_request_failed("q1", "err", max_failures=3)
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["failed_to_pending"] == 0
-    assert store.get_request("q1").failure_count >= 3
-    assert "q1" in [r for r in [iid]] or True   # placeholder
-    assert iid in store.unrecoverable_items("r1", max_request_failures=3)
+    assert store.get_request("q1").failure_count == 3
+    assert store.get_request("q1").status == REQ_FAILED
+    assert (iid, "err") in store.unrecoverable_items("r1", max_request_failures=3)

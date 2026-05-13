@@ -130,9 +130,11 @@ def make_fulfill_batch(provider: BatchProvider):
                 handle = provider.submit(llm_requests)
             except Exception as e:
                 logger.error("batch submit failed for {}: {}", provider_prefix, e)
+                cap = dispatcher.cfg.dispatcher.max_request_failures
                 for r in group:
                     dispatcher.store.mark_request_failed(
                         r.request_id, f"batch_submit_error: {e}",
+                        max_failures=cap,
                     )
                 continue
             dispatcher.store.tag_batch(handle.batch_id, [r.request_id for r in group])
@@ -159,10 +161,12 @@ def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
         except Exception as e:
             logger.warning("fetch error for batch {}: {}", batch_id, e)
             continue
+        cap = dispatcher.cfg.dispatcher.max_request_failures
         for br in results:
             if br.error is not None or br.response is None:
                 store.mark_request_failed(
                     br.request_id, br.error or "batch fetch missing response",
+                    max_failures=cap,
                 )
                 continue
             store.insert_response(

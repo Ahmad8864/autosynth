@@ -20,6 +20,8 @@ def build_request(
     round_n: int,
     attempt: int,
     model_key: str,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     candidate: Candidate,
     role: str,
     domain: DomainAdapter,
@@ -40,4 +42,6 @@ def build_request(
         messages=messages,
         attempt=attempt,
         json_mode=False,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )

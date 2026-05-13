@@ -38,7 +38,10 @@ def _one_request(req_row: RequestRow, dispatcher: Dispatcher) -> None:
         resp: Response = dispatcher.llm.complete(request)
     except Exception as e:
         logger.warning("request {} failed: {}", req_row.request_id, e)
-        dispatcher.store.mark_request_failed(req_row.request_id, str(e)[:500])
+        dispatcher.store.mark_request_failed(
+            req_row.request_id, str(e)[:500],
+            max_failures=dispatcher.cfg.dispatcher.max_request_failures,
+        )
         return
     dispatcher.store.insert_response(
         request_id=req_row.request_id,

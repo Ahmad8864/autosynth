@@ -93,15 +93,14 @@ class Runner:
 def _build_llm_config(cfg: RunConfig) -> LLMConfig:
     """Derive an LLMConfig from the existing RunConfig fields.
 
-    Top-level ``llm:`` block isn't exposed in RunConfig yet, so we infer
-    sensible defaults from per-role ModelConfigs and existing global knobs.
+    Sampling params (temperature, max_tokens) are carried per-call on the
+    LLMRequest itself, sourced from each role's ModelConfig — there's no
+    global fallback at this layer.
     """
     return LLMConfig(
         max_retries=cfg.max_retries,
         request_timeout_s=cfg.request_timeout_s,
         rate_limits={"mock/*": RateLimitSpec(rpm=None)},
-        default_temperature=cfg.challenger.temperature,
-        default_max_tokens=cfg.challenger.max_tokens,
         model_extras=_collect_model_extras(cfg),
     )
 

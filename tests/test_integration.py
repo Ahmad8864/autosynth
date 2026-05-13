@@ -133,6 +133,58 @@ def test_build_llm_config_omits_models_with_no_extras(sample_docs: Path, output_
     assert llm_cfg.model_extras == {}
 
 
+def test_each_role_request_carries_its_configured_temperature(
+    sample_docs: Path, output_dir: Path,
+):
+    """Regression guard: every role's persisted request must carry that
+    role's configured temperature, not the challenger's.
+
+    Before per-role plumbing landed, LLMConfig.default_temperature was wired
+    from cfg.challenger.temperature and no agent set req.temperature, so the
+    judge silently ran at 0.7 even when YAML asked for 0.0. This test fails
+    immediately if anyone re-introduces a fallback through the challenger.
+    """
+    cfg = _cfg(sample_docs, output_dir, "happy")
+    # Distinct values per role; choose numbers no two roles share so a
+    # cross-wiring bug can't accidentally pass.
+    cfg.challenger = ModelConfig(provider_model="mock/happy", temperature=0.81)
+    cfg.weak_solver = ModelConfig(provider_model="mock/happy", temperature=0.72)
+    cfg.strong_solver = ModelConfig(provider_model="mock/happy", temperature=0.33)
+    cfg.judge = ModelConfig(provider_model="mock/happy", temperature=0.04)
+    cfg.orchestrator = ModelConfig(provider_model="mock/happy", temperature=0.55)
+
+    Runner(cfg).run()
+
+    store = Store(output_dir / "test-run" / "run.db")
+    rows = store.conn.execute(
+        "SELECT role, temperature FROM requests"
+    ).fetchall()
+    by_role: dict[str, set[float | None]] = {}
+    for row in rows:
+        by_role.setdefault(row["role"], set()).add(row["temperature"])
+
+    # `quality` runs on the judge's ModelConfig; `reflector` on the orchestrator's.
+    expected = {
+        "challenger": 0.81,
+        "quality": 0.04,
+        "weak": 0.72,
+        "strong": 0.33,
+        "judge": 0.04,
+        "reflector": 0.55,
+    }
+    # The happy path accepts on round 1, so reflector never fires — only check
+    # roles that actually emitted a request. The non-empty role set still
+    # catches any cross-wiring (e.g. judge silently inheriting challenger temp).
+    fired = set(by_role)
+    assert {"challenger", "quality", "weak", "strong", "judge"}.issubset(fired)
+    for role in fired:
+        want = expected[role]
+        got = by_role[role]
+        assert got == {want}, (
+            f"role={role!r} expected temperature {want}, got {got}"
+        )
+
+
 def test_export_jsonl_via_store(sample_docs: Path, output_dir: Path, tmp_path: Path):
     cfg = _cfg(sample_docs, output_dir, "happy")
     runner = Runner(cfg)

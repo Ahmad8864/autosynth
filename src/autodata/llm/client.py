@@ -15,7 +15,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 from tenacity import (
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
@@ -25,8 +25,38 @@ from autodata.llm.rate_limit import RateLimitSpec, TokenBucket
 from autodata.llm.types import LLMRequest, Response
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Default-retry, with known-deterministic LiteLLM classes opted out.
+
+    A predicate (not an allowlist) so when LiteLLM grows a new transient
+    error class we still retry it by default — only the deterministic
+    failures we've explicitly identified stop the retry loop.
+    """
+    try:
+        import litellm
+    except ImportError:
+        return True
+    deterministic = tuple(
+        cls for cls in (
+            getattr(litellm, "BadRequestError", None),
+            getattr(litellm, "AuthenticationError", None),
+            getattr(litellm, "UnsupportedParamsError", None),
+            getattr(litellm, "NotFoundError", None),
+            getattr(litellm, "PermissionDeniedError", None),
+        ) if cls is not None
+    )
+    return not isinstance(exc, deterministic)
+
+
 class LLMConfig(BaseModel):
-    """Top-level LLM settings, separate from per-role ModelConfig defaults."""
+    """Top-level LLM settings.
+
+    Sampling params (``temperature``, ``max_tokens``) live on each per-role
+    :class:`~autodata.config.ModelConfig` and are carried on the
+    :class:`~autodata.llm.types.LLMRequest`. The client does not impose a
+    fallback — when a request leaves a sampling param as ``None``, that param
+    is simply omitted and the provider's own default applies.
+    """
 
     rate_limits: dict[str, RateLimitSpec] = Field(default_factory=dict)
     max_retries: int = 3
@@ -36,9 +66,6 @@ class LLMConfig(BaseModel):
     # Per-model LiteLLM kwargs (api_base, api_version, api_key, etc.), keyed by
     # model string. Applied as defaults under the explicit per-call kwargs.
     model_extras: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    # Default sampling params applied when LLMRequest leaves them None.
-    default_temperature: float = 0.7
-    default_max_tokens: int = 2048
 
 
 class LLMClient:
@@ -126,19 +153,19 @@ class LLMClient:
         @retry(
             stop=stop_after_attempt(self.cfg.max_retries),
             wait=wait_exponential_jitter(initial=1, max=20),
-            retry=retry_if_exception_type(Exception),
+            retry=retry_if_exception(_is_retryable),
             reraise=True,
         )
         def _call() -> Any:
-            kwargs: dict[str, Any] = dict(
-                model=req.model_key,
-                messages=req.messages,
-                temperature=(req.temperature if req.temperature is not None
-                             else self.cfg.default_temperature),
-                max_tokens=(req.max_tokens if req.max_tokens is not None
-                            else self.cfg.default_max_tokens),
-                timeout=self.cfg.request_timeout_s,
-            )
+            kwargs: dict[str, Any] = {
+                "model": req.model_key,
+                "messages": req.messages,
+                "timeout": self.cfg.request_timeout_s,
+            }
+            if req.temperature is not None:
+                kwargs["temperature"] = req.temperature
+            if req.max_tokens is not None:
+                kwargs["max_tokens"] = req.max_tokens
             if req.json_mode:
                 kwargs["response_format"] = {"type": "json_object"}
             extras = self.cfg.model_extras.get(req.model_key)

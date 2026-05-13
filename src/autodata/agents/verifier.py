@@ -14,6 +14,8 @@ def build_quality_request(
     item_id: str,
     round_n: int,
     model_key: str,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     candidate: Candidate,
     domain: DomainAdapter,
     harness: HarnessSpec | None = None,
@@ -29,6 +31,8 @@ def build_quality_request(
         model_key=model_key,
         messages=messages,
         json_mode=True,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
 
 
@@ -51,6 +55,8 @@ def build_judge_request(
     round_n: int,
     attempt: int,
     model_key: str,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
     candidate: Candidate,
     solver_response: str,
     solver_role: str,
@@ -76,6 +82,8 @@ def build_judge_request(
         attempt=attempt,
         json_mode=True,
         parent_response_id=parent_response_id,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
 
 

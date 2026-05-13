@@ -54,6 +54,8 @@ class MetaOptimizer:
                 request_timeout_s=run_cfg.request_timeout_s,
             )),
             model_key=mutator_cfg.provider_model,
+            temperature=mutator_cfg.temperature,
+            max_tokens=mutator_cfg.max_tokens,
         )
 
         # Compute deterministic train/val split.
