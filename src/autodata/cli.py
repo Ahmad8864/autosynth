@@ -123,11 +123,11 @@ def init_domain_cmd(
     name: str = typer.Argument(..., help="snake_case domain name"),
     out: Path | None = typer.Option(
         None, "--out", "-o",
-        help="Output file (defaults to ./<name>.py)",
+        help="Output file (defaults to ./domains/<name>.py)",
     ),
 ):
     """Write a new DomainAdapter skeleton you can fill in."""
-    target = out if out is not None else Path(f"{name}.py")
+    target = out if out is not None else Path("domains") / f"{name}.py"
     if target.exists():
         console.print(f"[red]refusing to overwrite[/red] {target}")
         raise typer.Exit(1)
