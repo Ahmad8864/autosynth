@@ -132,7 +132,7 @@ def init_domain_cmd(
         console.print(f"[red]refusing to overwrite[/red] {target}")
         raise typer.Exit(1)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_render_domain_template(name=name, cls=_camel(name)))
+    target.write_text(_render_domain_template(name=name, cls=_camel(name), path=target))
     console.print(f"[green]wrote[/green] {target}")
     console.print(f"Use it via:\n  domain:\n    path: {target}:{_camel(name)}")
 
@@ -238,10 +238,10 @@ def _camel(s: str) -> str:
     return "".join(p.capitalize() for p in s.replace("-", "_").split("_"))
 
 
-def _render_domain_template(*, name: str, cls: str) -> str:
+def _render_domain_template(*, name: str, cls: str, path: Path) -> str:
     """Load the packaged scaffold and substitute the domain name + class name."""
     src = files("autodata.templates").joinpath("new_domain.py.tmpl").read_text(encoding="utf-8")
-    return Template(src).substitute(NAME=name, CLASS=cls)
+    return Template(src).substitute(NAME=name, CLASS=cls, YAML_PATH=path.as_posix())
 
 
 if __name__ == "__main__":
