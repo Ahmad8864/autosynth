@@ -34,6 +34,7 @@ from autodata.dispatcher.hydration import (
     request_to_row,
 )
 from autodata.dispatcher.local import fulfill_local
+from autodata.dispatcher.progress import DispatcherProgress
 from autodata.domain import DomainAdapter, GroundingItem
 from autodata.harness import DEFAULT_HARNESS, HarnessSpec
 from autodata.llm import LLMClient
@@ -93,6 +94,7 @@ class Dispatcher:
         self._installed_handlers: list = []
         self._pool: ThreadPoolExecutor | None = None
         self._budget_warned = False
+        self._progress: DispatcherProgress | None = None
 
     def _executor(self) -> ThreadPoolExecutor:
         """Lazy persistent thread pool for fulfill_local — created once per run."""
@@ -108,10 +110,14 @@ class Dispatcher:
         self._normalize_for_resume()
         self._mark_unrecoverable_items()
         try:
-            self._main_loop()
+            with DispatcherProgress(total=len(self.grounding)) as progress:
+                self._progress = progress
+                self._refresh_progress(in_flight=self.store.in_flight_count(self.run_id))
+                self._main_loop()
             if not self._stop.is_set() and not self.store.has_non_terminal_items(self.run_id):
                 self.store.update_run_status(self.run_id, RUN_STATUS_COMPLETED)
         finally:
+            self._progress = None
             self._uninstall_signal_handlers()
             if self._pool is not None:
                 self._pool.shutdown(wait=True)
@@ -125,6 +131,7 @@ class Dispatcher:
             polled = self.poll_in_flight(self) if self.poll_in_flight else 0
             self._mark_unrecoverable_items()
             in_flight = self.store.in_flight_count(self.run_id)
+            self._refresh_progress(in_flight=in_flight)
             if not advanced and not dispatched and not polled and in_flight == 0:
                 if not self.store.has_non_terminal_items(self.run_id):
                     break
@@ -323,5 +330,16 @@ class Dispatcher:
             accepted=counts.get(ITEM_ACCEPTED, 0),
             rejected=counts.get(ITEM_REJECTED, 0),
             state_counts=counts,
+            cost_usd=self.store.cost_so_far(self.run_id),
+        )
+
+    def _refresh_progress(self, *, in_flight: int) -> None:
+        if self._progress is None:
+            return
+        counts = self.store.items_terminal_counts(self.run_id)
+        self._progress.update(
+            accepted=counts.get(ITEM_ACCEPTED, 0),
+            rejected=counts.get(ITEM_REJECTED, 0),
+            in_flight=in_flight,
             cost_usd=self.store.cost_so_far(self.run_id),
         )

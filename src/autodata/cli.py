@@ -13,7 +13,6 @@ Commands:
 from __future__ import annotations
 
 import sqlite3
-import sys
 from importlib.resources import files
 from pathlib import Path
 from string import Template
@@ -24,6 +23,7 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
+from autodata._console import STDERR_CONSOLE
 from autodata.config import RunConfig, load_config
 from autodata.metaopt import MetaOptimizer
 from autodata.runner import Runner
@@ -37,11 +37,15 @@ console = Console()
 
 
 def _configure_logging(verbose: bool) -> None:
+    # Route through the shared stderr console so loguru output and the
+    # dispatcher's live progress bar can coexist — rich's Live keeps the
+    # bar pinned at the bottom while log lines scroll above it.
     logger.remove()
     logger.add(
-        sys.stderr,
+        lambda msg: STDERR_CONSOLE.print(msg, end="", markup=False, highlight=False),
         level="DEBUG" if verbose else "INFO",
         format="<level>{level: <7}</level> | {message}",
+        colorize=True,
     )
 
 
