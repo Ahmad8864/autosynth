@@ -1,5 +1,10 @@
 # autosynth
 
+[![PyPI](https://img.shields.io/pypi/v/autosynth.svg)](https://pypi.org/project/autosynth/)
+[![CI](https://github.com/Ahmad8864/autosynth/actions/workflows/ci.yml/badge.svg)](https://github.com/Ahmad8864/autosynth/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/pypi/pyversions/autosynth.svg)](https://pypi.org/project/autosynth/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Generate synthetic datasets with an LLM loop that proposes, audits, solves, and judges its own work. Inspired by Meta FAIR's [Autodata / Agentic Self-Instruct][paper] paper, but rewritten to be domain-agnostic: every domain-specific piece lives in a small Python plugin, and the runtime is the same regardless of whether you're generating math word problems, support-ticket triage data, or QA pairs from your own docs.
 
 The headline trick: for each candidate datapoint, run a *weak* solver and a *strong* solver, score both against an LLM-generated rubric, and only keep the example if the strong solver clearly beats the weak one on a quality-passing example. Failed rounds are reflected on and fed back into the next attempt.
