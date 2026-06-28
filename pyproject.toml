@@ -60,6 +60,12 @@ where = ["src"]
 [tool.setuptools_scm]
 version_file = "src/autosynth/_version.py"
 
+[tool.commitizen]
+name = "cz_conventional_commits"
+tag_format = "v$version"
+version_provider = "scm"
+major_version_zero = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

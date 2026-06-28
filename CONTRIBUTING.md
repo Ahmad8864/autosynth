@@ -34,7 +34,29 @@ After cloning, install the hooks once:
 uv run pre-commit install
 ```
 
-That wires up ruff (lint + format), file hygiene checks (trailing whitespace, large files, YAML/TOML syntax), and gitleaks secret scanning. They fire on every `git commit`. Run against the whole tree on demand with `uv run pre-commit run --all-files`.
+That wires up ruff (lint + format), file hygiene checks (trailing whitespace, large files, YAML/TOML syntax), gitleaks secret scanning, and a commit-message check (see [Commit messages](#commit-messages)). They fire on every `git commit`. Run against the whole tree on demand with `uv run pre-commit run --all-files`.
+
+## Commit messages
+
+This project follows [Conventional Commits](https://www.conventionalcommits.org):
+
+```
+<type>[(scope)][!]: <subject>
+```
+
+- **type**: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `style`, or `chore`.
+- **subject**: imperative, lowercase, no trailing period ("add", not "added").
+- Add `!` plus a `BREAKING CHANGE:` footer for anything that breaks a public import or behavior.
+- An optional body (wrap at 72) covers *what* and *why*, not *how*.
+
+```
+feat(acceptance): add verifiable acceptance mode
+fix(dispatcher): close consumption race on resume
+docs(readme): document verifiable mode
+refactor(acceptance)!: move evaluate() to autosynth.acceptance
+```
+
+The `commitizen` commit-msg hook checks this on every commit; `uv run cz commit` walks you through a valid message interactively.
 
 ## Before you open a PR
 
