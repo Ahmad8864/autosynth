@@ -18,13 +18,12 @@ from pathlib import Path
 from string import Template
 
 import typer
-import yaml
 from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
 from autosynth._console import STDERR_CONSOLE
-from autosynth.config import RunConfig, load_config
+from autosynth.config import load_config, load_snapshot
 from autosynth.metaopt import MetaOptimizer
 from autosynth.runner import Runner
 from autosynth.store import Store
@@ -82,6 +81,12 @@ def run_cmd(
     if resume:
         run_id = resume
         cfg.resume = True
+        # Guard the footgun: --resume uses the config's output_dir to locate the
+        # run, so a mismatched config would silently seed a new, empty run instead.
+        existing = Path(cfg.output_dir) / resume / "run.db"
+        if not existing.exists():
+            console.print(f"[red]no run to resume at {existing}[/red] (check the config's output_dir)")
+            raise typer.Exit(1)
     runner = Runner(cfg, run_id=run_id)
     summary = runner.run()
 
@@ -216,7 +221,7 @@ def resume_cmd(
         if not snap.exists():
             console.print(f"[red]no config to resume with at {snap}[/red]")
             raise typer.Exit(1)
-        cfg = RunConfig.model_validate(yaml.safe_load(snap.read_text()))
+        cfg = load_snapshot(snap)
 
     # `run_dir` already includes the run_id segment; the Runner appends it again.
     cfg.output_dir = str(run_dir.parent)

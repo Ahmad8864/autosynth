@@ -179,7 +179,7 @@ class Dispatcher:
     def _advance_one(self, item_row) -> None:
         item_state = load_item_state(self.store, item_row)
         responses, consumed_watermark = hydrate_responses(
-            self.store, item_row["item_id"], item_row["updated_at"]
+            self.store, item_row["item_id"], item_row["consumed_seq"]
         )
         grounding = self.grounding.get(item_state.source_id)
         if grounding is None:
@@ -213,7 +213,7 @@ class Dispatcher:
         self,
         result: StepResult,
         *,
-        consumed_watermark: str | None = None,
+        consumed_watermark: int | None = None,
     ) -> None:
         new_state = result.state
         completed = result.completed_round
@@ -289,12 +289,13 @@ class Dispatcher:
             rejection_reasons=(
                 list(new_state.rejection_reasons) or None if new_state.state == State.REJECTED else None
             ),
-            # Pin updated_at to the max received_at of consumed responses so
-            # worker rows committed concurrently with this step (and thus
-            # invisible to our hydrate snapshot) aren't masked by a
-            # forward-jumping watermark. ``None`` for state transitions that
-            # didn't consume responses (e.g. the PENDING-first-step path).
-            updated_at=consumed_watermark,
+            # Advance the watermark to the max rowid of consumed responses so
+            # worker rows committed concurrently with this step (invisible to our
+            # hydrate snapshot, but with strictly higher rowids) aren't masked.
+            # ``None`` for transitions that consumed no responses (e.g. the
+            # PENDING-first-step path) — consumed_seq stays put, which is correct
+            # there since it's already 0 and the challenger response has rowid ≥ 1.
+            consumed_seq=consumed_watermark,
         )
 
     def _dispatch_pending(self) -> int:

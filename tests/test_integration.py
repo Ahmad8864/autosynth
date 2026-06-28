@@ -7,7 +7,10 @@ The full pipeline runs against the in-process mock provider — zero API keys.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from autosynth.config import (
     AcceptanceConfig,
@@ -49,6 +52,15 @@ def test_happy_path_accepts(sample_docs: Path, output_dir: Path):
 
     store = Store(runner.run_dir / "run.db")
     assert store.count_accepted("test-run") == 2
+
+
+def test_runner_closes_store_after_run(sample_docs: Path, output_dir: Path):
+    """The store connection is closed on the way out (no leak across many Runners)."""
+    runner = Runner(_cfg(sample_docs, output_dir, "happy"))
+    runner.run()
+    with pytest.raises(sqlite3.ProgrammingError):
+        runner.store.conn.execute("SELECT 1")
+    runner.close()  # idempotent
 
 
 def test_reject_path_exhausts_rounds(sample_docs: Path, output_dir: Path):

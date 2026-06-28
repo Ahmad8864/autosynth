@@ -14,6 +14,7 @@ from autosynth.acceptance import (
 )
 from autosynth.config import (
     AcceptanceConfig,
+    DispatcherConfig,
     DomainConfig,
     LoopConfig,
     MetaOptConfig,
@@ -32,6 +33,7 @@ from autosynth.domain import (
 )
 from autosynth.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness, make_harness
 from autosynth.llm import LLMClient, LLMConfig, LLMRequest, RateLimitSpec, Response, register_mock
+from autosynth.metaopt import MetaOptimizer
 from autosynth.runner import Runner
 from autosynth.schemas import (
     Candidate,
@@ -61,6 +63,7 @@ __all__ = [
     "bullet_list",
     # Config
     "AcceptanceConfig",
+    "DispatcherConfig",
     "DomainConfig",
     "LoopConfig",
     "MetaOptConfig",
@@ -82,6 +85,7 @@ __all__ = [
     "DEFAULT_HARNESS",
     "make_harness",
     "apply_harness",
+    "MetaOptimizer",
     # Provider hooks
     "LLMClient",
     "LLMConfig",

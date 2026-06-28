@@ -15,6 +15,14 @@ All notable changes to this project are documented here. The format is based on 
 
 - Runs created by older versions keep resuming: their databases are upgraded automatically on open.
 - Meta-optimization gates on validation score alone and averages repeated evaluations of a candidate, so acceptance isn't decided by a single noisy run.
+- Unknown keys in a config you pass are now rejected (instead of silently ignored), so typos like `weak_avg_maxx` fail loudly; resuming from a run's snapshot still tolerates keys removed since it was written. Removed config keys that never had any effect: `seed`, `max_concurrency`, `request_budget_usd`, `hf_export`, and `loop.stop_on_first_accept` — delete these from older configs you pass with `--config`.
+- The safety/PII filter now scans nested payload values and the reference answer, not only top-level payload fields.
+
+### Fixed
+
+- Fixed a rare stuck-item bug: an item could stall mid-run if two of its responses were committed in the same microsecond. The advance watermark is now a strictly-monotonic sequence rather than a wall-clock timestamp.
+- The `Runner` now closes its database connection when a run finishes, avoiding a connection / WAL-file leak when many runs are created (e.g. during meta-optimization).
+- `configs/mock_demo.yaml` had a YAML typo (`strong_solver:{` missing a space) that silently fell back to defaults; fixed, and now caught by strict config validation.
 
 ## [0.1.1] - 2026-05-12
 

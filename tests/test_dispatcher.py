@@ -305,3 +305,34 @@ def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
     )
     summary = disp2.run()
     assert summary.accepted == 2
+
+
+def test_resume_after_watermark_reset_is_idempotent(store, cfg, docs_dir):
+    """Simulate a crash mid-scoring followed by the v2->v3 migration: the item is
+    back in NEED_SCORES with its scores persisted and consumed_seq reset to 0, so
+    every solver/judge response re-delivers on resume. Re-ingest must be idempotent
+    (no duplicate scores) and the round must re-finalize to the same result."""
+    disp, grounding = _seed_run(store, cfg, docs_dir)
+    assert disp.run().accepted == 2  # full run: scores + accepted records persisted
+    scores_before = store.conn.execute("SELECT COUNT(*) FROM solver_scores").fetchone()[0]
+    assert scores_before > 0
+
+    # Rewind to the migration's worst case: rounds un-finalized, items back in
+    # NEED_SCORES, every already-scored response re-deliverable (consumed_seq=0).
+    with store.tx() as cur:
+        cur.execute("DELETE FROM accepted")
+        cur.execute("UPDATE rounds SET accepted = 0")
+        cur.execute("UPDATE items SET state = 'NEED_SCORES', final_round = NULL, consumed_seq = 0")
+
+    disp2 = Dispatcher(
+        store=store,
+        llm=LLMClient(),
+        domain=disp.domain,
+        cfg=cfg,
+        run_id=cfg.run_id,
+        harness=DEFAULT_HARNESS,
+        grounding=grounding,
+    )
+    assert disp2.run().accepted == 2  # re-finalized from re-delivered, already-scored responses
+    assert store.conn.execute("SELECT COUNT(*) FROM solver_scores").fetchone()[0] == scores_before  # no dup
+    assert store.conn.execute("SELECT COUNT(*) FROM accepted").fetchone()[0] == 2

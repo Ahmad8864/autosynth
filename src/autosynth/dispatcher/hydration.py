@@ -83,17 +83,17 @@ def load_item_state(store: Store, item_row: sqlite3.Row) -> ItemState:
     )
 
 
-def hydrate_responses(store: Store, item_id: str, since_ts: str) -> tuple[list[StepResponse], str | None]:
-    """Pull responses + matching request/parent fields in a single query.
+def hydrate_responses(store: Store, item_id: str, since_seq: int) -> tuple[list[StepResponse], int | None]:
+    """Pull responses (rowid > since_seq) + matching request/parent fields in one query.
 
-    Returns ``(responses, max_received_at)``. The dispatcher uses the
-    second value as the item's new ``updated_at`` so it strictly bounds the
-    set of responses just consumed without jumping past worker rows that
-    committed concurrently. ``None`` when no rows matched.
+    Returns ``(responses, max_seq)``. The dispatcher writes ``max_seq`` to the
+    item's ``consumed_seq`` watermark — a strictly-monotonic integer that bounds
+    the just-consumed responses without masking worker rows that committed
+    concurrently. ``None`` when no rows matched.
     """
     out: list[StepResponse] = []
-    max_received_at: str | None = None
-    for row in store.hydrate_responses(item_id, since_ts):
+    max_seq: int | None = None
+    for row in store.hydrate_responses(item_id, since_seq):
         is_judge = row["role"] == "judge" and row["parent_response_id"] is not None
         out.append(
             StepResponse(
@@ -107,10 +107,10 @@ def hydrate_responses(store: Store, item_id: str, since_ts: str) -> tuple[list[S
                 solver_role=row["parent_role"] if is_judge else None,
             )
         )
-        received_at = row["received_at"]
-        if max_received_at is None or received_at > max_received_at:
-            max_received_at = received_at
-    return out, max_received_at
+        seq = row["seq"]
+        if max_seq is None or seq > max_seq:
+            max_seq = seq
+    return out, max_seq
 
 
 def row_to_round(row) -> Round:

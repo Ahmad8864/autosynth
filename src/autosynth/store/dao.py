@@ -166,17 +166,20 @@ class Store:
         current_round: int | None = None,
         final_round: int | None = None,
         rejection_reasons: list[str] | None = None,
-        updated_at: str | None = None,
+        consumed_seq: int | None = None,
     ) -> None:
         """Update an item row.
 
-        ``updated_at`` defaults to ``_utcnow()``. The dispatcher passes an
-        explicit value (the max received_at of just-consumed responses) when
-        advancing items so concurrently-arriving worker responses aren't
-        masked by a forward-jumping watermark. See ``insert_response``.
+        ``updated_at`` is always refreshed to ``_utcnow()`` (a cosmetic
+        timestamp). The dispatcher passes ``consumed_seq`` — the max
+        responses.rowid just consumed — to advance the watermark; it is left
+        unchanged when None (e.g. a terminal REJECT that consumed no responses).
         """
         sets: list[str] = ["updated_at = ?"]
-        vals: list[Any] = [updated_at if updated_at is not None else _utcnow()]
+        vals: list[Any] = [_utcnow()]
+        if consumed_seq is not None:
+            sets.append("consumed_seq = ?")
+            vals.append(consumed_seq)
         if state is not None:
             sets.append("state = ?")
             vals.append(state)
@@ -197,7 +200,7 @@ class Store:
         return self.conn.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
 
     def items_ready_to_advance(self, run_id: str, limit: int = 100) -> list[sqlite3.Row]:
-        """Items with unconsumed responses, ready for a step()."""
+        """Items with unconsumed responses (rowid > consumed_seq), ready for a step()."""
         return self.conn.execute(
             f"""SELECT i.* FROM items i
                WHERE i.run_id = ?
@@ -205,7 +208,7 @@ class Store:
                  AND EXISTS (
                     SELECT 1 FROM responses r
                     JOIN requests q ON q.request_id = r.request_id
-                    WHERE q.item_id = i.item_id AND r.received_at > i.updated_at
+                    WHERE q.item_id = i.item_id AND r.rowid > i.consumed_seq
                  )
                ORDER BY i.updated_at
                LIMIT ?""",
@@ -512,12 +515,9 @@ class Store:
         """Insert a response and atomically mark the request done.
 
         Idempotent on request_id (skipped if a response row already exists).
+        ``received_at`` is a cosmetic timestamp; the advance watermark is
+        ``responses.rowid`` (strictly monotonic), not this value.
         """
-        # Timestamp captured inside the tx so received_at values are strictly
-        # monotonic with commit order (BEGIN IMMEDIATE serializes writers).
-        # The dispatcher relies on this when setting an item's updated_at to
-        # ``max(received_at)`` of consumed responses — any worker row that
-        # committed concurrently is guaranteed to have received_at > that.
         with self.tx() as cur:
             now = _utcnow()
             existing = cur.execute("SELECT 1 FROM responses WHERE response_id=?", (request_id,)).fetchone()
@@ -559,30 +559,20 @@ class Store:
             return None
         return ResponseRow(**dict(row))
 
-    def responses_since(self, item_id: str, since_ts: str) -> list[ResponseRow]:
-        cur = self.conn.execute(
-            """SELECT r.* FROM responses r
-               JOIN requests q ON q.request_id = r.request_id
-               WHERE q.item_id=? AND r.received_at > ?
-               ORDER BY r.request_id""",
-            (item_id, since_ts),
-        )
-        return [ResponseRow(**dict(row)) for row in cur.fetchall()]
+    def hydrate_responses(self, item_id: str, since_seq: int) -> list[sqlite3.Row]:
+        """Pull responses (rowid > since_seq) + request fields + parent in one query.
 
-    def hydrate_responses(self, item_id: str, since_ts: str) -> list[sqlite3.Row]:
-        """Pull responses + the request fields + parent request/response in one query.
-
-        Returns rows with columns: request_id, role, round_n, attempt, text,
-        parent_response_id, parent_role, parent_text. Replaces the N+1 pattern
-        of fetching each request and its parent separately.
+        Returns rows with columns: request_id, seq (responses.rowid, the watermark),
+        role, round_n, attempt, text, parent_response_id, parent_role, parent_text.
+        Replaces the N+1 pattern of fetching each request and its parent separately.
         """
         cur = self.conn.execute(
             """SELECT r.request_id            AS request_id,
+                      r.rowid                  AS seq,
                       q.role                   AS role,
                       q.round_n                AS round_n,
                       q.attempt                AS attempt,
                       r.text                   AS text,
-                      r.received_at            AS received_at,
                       q.parent_response_id     AS parent_response_id,
                       pq.role                  AS parent_role,
                       pr.text                  AS parent_text
@@ -590,9 +580,9 @@ class Store:
                JOIN requests q  ON q.request_id  = r.request_id
                LEFT JOIN requests  pq ON pq.request_id  = q.parent_response_id
                LEFT JOIN responses pr ON pr.response_id = q.parent_response_id
-               WHERE q.item_id = ? AND r.received_at > ?
+               WHERE q.item_id = ? AND r.rowid > ?
                ORDER BY r.request_id""",
-            (item_id, since_ts),
+            (item_id, since_seq),
         )
         return cur.fetchall()
 

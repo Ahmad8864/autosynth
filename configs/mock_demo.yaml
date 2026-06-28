@@ -15,7 +15,6 @@ loop:
   max_rounds: 3
   weak_samples: 2
   strong_samples: 2
-  stop_on_first_accept: true
 
 acceptance:
   weak_avg_max: 0.65
@@ -26,11 +25,11 @@ acceptance:
   min_gap: 0.20
   require_quality_passed: true
 
-orchestrator: { provider_model: mock/scripted }
-challenger:   { provider_model: mock/scripted }
-weak_solver:  { provider_model: mock/scripted }
-strong_solver:{ provider_model: mock/scripted }
-judge:        { provider_model: mock/scripted }
+orchestrator:  { provider_model: mock/scripted }
+challenger:    { provider_model: mock/scripted }
+weak_solver:   { provider_model: mock/scripted }
+strong_solver: { provider_model: mock/scripted }
+judge:         { provider_model: mock/scripted }
 
 safety:
   enabled: false

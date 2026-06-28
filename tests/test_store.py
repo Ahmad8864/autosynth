@@ -258,19 +258,6 @@ def test_insert_response_idempotent(store: Store):
     assert store.cost_so_far("r1") == pytest.approx(0.01)
 
 
-def test_responses_since(store: Store):
-    iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_QUALITY")
-    store.insert_requests([_request(iid, request_id=f"q{i}") for i in range(3)])
-    for i in range(3):
-        store.insert_response(request_id=f"q{i}", model="m", text=f"r{i}")
-    item = store.get_item(iid)
-    assert item is not None
-    new = store.responses_since(iid, item["updated_at"])
-    assert {r.request_id for r in new} == {"q0", "q1", "q2"}
-    # ordered deterministically by request_id
-    assert [r.request_id for r in new] == ["q0", "q1", "q2"]
-
-
 def test_pending_request_ids_for_item(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1"), _request(iid, request_id="q2")])
@@ -390,6 +377,7 @@ def test_migration_v1_to_v2_adds_correct(tmp_path: Path):
     db = tmp_path / "v1.db"
     conn = sqlite3.connect(db)
     conn.executescript(
+        "CREATE TABLE items (item_id TEXT PRIMARY KEY);"  # later migrations ALTER items
         "CREATE TABLE solver_scores (score_id TEXT PRIMARY KEY, total REAL NOT NULL);"
         "INSERT INTO solver_scores (score_id, total) VALUES ('old', 0.5);"
     )
@@ -408,6 +396,39 @@ def test_migration_v1_to_v2_adds_correct(tmp_path: Path):
     finally:
         store.close()
     Store(db).close()  # reopening at v2 must not re-run the ALTER
+
+
+def test_migration_v2_to_v3_adds_consumed_seq(tmp_path: Path):
+    """A v2 db gains items.consumed_seq (the rowid watermark) on open."""
+    db = tmp_path / "v2.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(re.sub(r"\n\s*consumed_seq\s+INTEGER NOT NULL DEFAULT 0,", "", _SCHEMA_SQL))
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    assert "consumed_seq" not in {r[1] for r in conn.execute("PRAGMA table_info(items)")}
+    conn.close()
+
+    store = Store(db)  # _migrate runs 2 -> 3
+    try:
+        assert "consumed_seq" in {r[1] for r in store.conn.execute("PRAGMA table_info(items)")}
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    finally:
+        store.close()
+
+
+def test_hydrate_responses_uses_rowid_watermark(store: Store):
+    """hydrate_responses returns responses with rowid > since_seq; the max seq is
+    the new watermark, past which nothing re-delivers."""
+    iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
+    store.insert_requests([_request(iid, request_id=f"q{i}") for i in range(2)])
+    store.claim_pending(2)
+    store.insert_response(request_id="q0", model="m", text="a")
+    store.insert_response(request_id="q1", model="m", text="b")
+
+    rows = store.hydrate_responses(iid, 0)
+    assert {r["request_id"] for r in rows} == {"q0", "q1"}
+    max_seq = max(r["seq"] for r in rows)
+    assert store.hydrate_responses(iid, max_seq) == []  # all consumed → nothing past the watermark
 
 
 def _schema_fingerprint(conn: sqlite3.Connection) -> dict:
@@ -437,8 +458,9 @@ def test_fresh_and_migrated_schema_converge(tmp_path: Path):
     end at identical schema — the guard against the two sources of truth drifting
     (e.g. a column added to one but not the other).
 
-    The v1 baseline is the current schema minus the v2 delta. When a later
-    migration lands, snapshot the prior version's schema here the same way.
+    The v1 baseline is the current schema minus every later delta (v2 added
+    solver_scores.correct; v3 added items.consumed_seq). When a later migration
+    lands, strip its column here too.
     """
     fresh = Store(tmp_path / "fresh.db")
     try:
@@ -447,16 +469,18 @@ def test_fresh_and_migrated_schema_converge(tmp_path: Path):
         fresh.close()
 
     v1_sql = re.sub(r"\n\s*correct\s+INTEGER,", "", _SCHEMA_SQL)
+    v1_sql = re.sub(r"\n\s*consumed_seq\s+INTEGER NOT NULL DEFAULT 0,", "", v1_sql)
     db = tmp_path / "v1.db"
     conn = sqlite3.connect(db)
     conn.executescript(v1_sql)
     conn.execute("PRAGMA user_version = 1")
     conn.commit()
-    v1_cols = {r[1] for r in conn.execute("PRAGMA table_info(solver_scores)")}
+    score_cols = {r[1] for r in conn.execute("PRAGMA table_info(solver_scores)")}
+    item_cols = {r[1] for r in conn.execute("PRAGMA table_info(items)")}
     conn.close()
-    assert "correct" not in v1_cols  # sanity: baseline really is pre-v2
+    assert "correct" not in score_cols and "consumed_seq" not in item_cols  # baseline is pre-v2/v3
 
-    migrated = Store(db)  # _migrate runs 1 -> 2
+    migrated = Store(db)  # _migrate walks 1 -> 2 -> 3
     try:
         assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert _schema_fingerprint(migrated.conn) == expected

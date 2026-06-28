@@ -9,12 +9,19 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _ENV_RE = re.compile(r"\$\{([A-Z0-9_]+)(?::([^}]*))?\}")
+
+
+class _StrictModel(BaseModel):
+    """Base for config models: reject unknown keys so typos (e.g. ``weak_avg_maxx``)
+    fail loudly instead of silently falling back to defaults."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 def _interpolate(value: Any) -> Any:
@@ -32,7 +39,7 @@ def _interpolate(value: Any) -> Any:
     return value
 
 
-class ModelConfig(BaseModel):
+class ModelConfig(_StrictModel):
     """Per-role model settings. `provider_model` is a LiteLLM model string,
     e.g. `openai/gpt-4o-mini`, `anthropic/claude-haiku-4-5`,
     `together_ai/meta-llama/...`, `ollama/llama3`, or `mock/scripted`.
@@ -49,7 +56,7 @@ class ModelConfig(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
-class AcceptanceConfig(BaseModel):
+class AcceptanceConfig(_StrictModel):
     """Acceptance thresholds for both regimes the paper uses.
 
     ``mode`` selects the regime:
@@ -84,15 +91,14 @@ class AcceptanceConfig(BaseModel):
     verifiable_strong_min_correct: int = 3
 
 
-class LoopConfig(BaseModel):
+class LoopConfig(_StrictModel):
     max_rounds: int = 5
     weak_samples: int = 3
     strong_samples: int = 3
-    stop_on_first_accept: bool = True
     short_circuit_strong: bool = False  # score the strong solver only when the weak gate passes (cost saver)
 
 
-class DomainConfig(BaseModel):
+class DomainConfig(_StrictModel):
     """Either `name` (registered) or `path` (`module.py:Class` or
     `pkg.module:Class`) selects the domain. `params` is passed to its ctor.
     """
@@ -108,12 +114,12 @@ class DomainConfig(BaseModel):
         return self
 
 
-class SafetyConfig(BaseModel):
+class SafetyConfig(_StrictModel):
     enabled: bool = False
     filter: str | None = None  # "module:attr"
 
 
-class DispatcherConfig(BaseModel):
+class DispatcherConfig(_StrictModel):
     """Settings for the request-fulfillment dispatcher."""
 
     concurrency: int = 4  # outbound LLM calls in flight per loop tick
@@ -123,7 +129,7 @@ class DispatcherConfig(BaseModel):
     items_per_advance: int = 50  # max items to advance per loop iteration
 
 
-class MetaOptConfig(BaseModel):
+class MetaOptConfig(_StrictModel):
     """Settings for the meta-optimization loop (paper §meta-opt).
 
     The loop selects parents by Boltzmann sampling on their *mean* validation
@@ -151,10 +157,9 @@ class MetaOptConfig(BaseModel):
     output_subdir: str = "metaopt"
 
 
-class RunConfig(BaseModel):
+class RunConfig(_StrictModel):
     run_id: str | None = None  # auto-generated if unset
     output_dir: str = "outputs"
-    seed: int = 0
 
     domain: DomainConfig
     loop: LoopConfig = Field(default_factory=LoopConfig)
@@ -167,15 +172,12 @@ class RunConfig(BaseModel):
     judge: ModelConfig = Field(default_factory=ModelConfig)
 
     max_examples: int = 10
-    max_concurrency: int = 1  # set >1 for concurrent source-item processing
     request_timeout_s: int = 60
     max_retries: int = 3
-    request_budget_usd: float | None = None  # soft budget, advisory only
 
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
 
     resume: bool = True
-    hf_export: bool = False
 
     dispatcher: DispatcherConfig = Field(default_factory=DispatcherConfig)
     budget_usd: float | None = None  # null = unlimited
@@ -188,3 +190,33 @@ def load_config(path: str | Path) -> RunConfig:
     raw = yaml.safe_load(path.read_text())
     raw = _interpolate(raw)
     return RunConfig.model_validate(raw)
+
+
+def _nested_model(annotation: Any) -> type[BaseModel] | None:
+    for c in (annotation, *get_args(annotation)):
+        if isinstance(c, type) and issubclass(c, BaseModel):
+            return c
+    return None
+
+
+def _strip_unknown(raw: Any, model: type[BaseModel]) -> Any:
+    """Recursively drop keys not declared on ``model`` (and its nested models)."""
+    if not isinstance(raw, dict):
+        return raw
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        field = model.model_fields.get(key)
+        if field is None:
+            continue
+        nested = _nested_model(field.annotation)
+        out[key] = _strip_unknown(value, nested) if nested else value
+    return out
+
+
+def load_snapshot(path: str | Path) -> RunConfig:
+    """Load a run's config snapshot, tolerating keys removed since it was written.
+
+    Unlike :func:`load_config` (strict), unknown keys are dropped so an in-flight
+    run still resumes after a field is removed from the schema."""
+    raw = _interpolate(yaml.safe_load(Path(path).read_text()))
+    return RunConfig.model_validate(_strip_unknown(raw, RunConfig))

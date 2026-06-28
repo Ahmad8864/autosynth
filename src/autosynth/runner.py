@@ -46,29 +46,41 @@ class Runner:
         self.llm = LLMClient(_build_llm_config(cfg))
 
     def run(self) -> RunSummary:
-        write_yaml_snapshot(self.run_dir / "config.snapshot.yaml", self.cfg)
-        self._ensure_run_row()
-        grounding = self._seed_items()
-        if not grounding:
-            logger.warning("no grounding items; run is empty")
-            return RunSummary(
-                run_id=self.run_id,
-                accepted=0,
-                rejected=0,
-                state_counts={},
-                cost_usd=0.0,
-            )
+        # Close the store on the way out so callers that create many Runners
+        # (e.g. meta-opt evaluates a fresh Runner per harness) don't leak a
+        # SQLite connection + WAL files each time. The dispatcher shares this
+        # store instance and never closes it.
+        try:
+            write_yaml_snapshot(self.run_dir / "config.snapshot.yaml", self.cfg)
+            self._ensure_run_row()
+            grounding = self._seed_items()
+            if not grounding:
+                logger.warning("no grounding items; run is empty")
+                return RunSummary(
+                    run_id=self.run_id,
+                    accepted=0,
+                    rejected=0,
+                    state_counts={},
+                    cost_usd=0.0,
+                )
 
-        dispatcher = Dispatcher(
-            store=self.store,
-            llm=self.llm,
-            domain=self.domain,
-            cfg=self.cfg,
-            run_id=self.run_id,
-            harness=self.harness,
-            grounding=grounding,
-        )
-        return dispatcher.run()
+            dispatcher = Dispatcher(
+                store=self.store,
+                llm=self.llm,
+                domain=self.domain,
+                cfg=self.cfg,
+                run_id=self.run_id,
+                harness=self.harness,
+                grounding=grounding,
+            )
+            return dispatcher.run()
+        finally:
+            self.store.close()
+
+    def close(self) -> None:
+        """Close the run's store connection (idempotent). Use when a Runner is
+        created but ``run()`` is never called."""
+        self.store.close()
 
     def _ensure_run_row(self) -> None:
         if self.store.get_run(self.run_id) is None:

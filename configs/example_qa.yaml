@@ -7,7 +7,7 @@ max_examples: 20
 domain:
   name: qa_from_documents
   params:
-    source_dir: ./my_corpus
+    source_dir: ./examples/sample_docs   # swap in your own corpus
     glob: "**/*.md"
     max_chars: 12000
 
@@ -15,7 +15,6 @@ loop:
   max_rounds: 5
   weak_samples: 3
   strong_samples: 3
-  stop_on_first_accept: true
 
 acceptance:
   weak_avg_max: 0.65

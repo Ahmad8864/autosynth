@@ -16,7 +16,6 @@ loop:
   max_rounds: 4
   weak_samples: 4
   strong_samples: 4
-  stop_on_first_accept: true
 
 acceptance:
   mode: verifiable

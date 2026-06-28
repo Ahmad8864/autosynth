@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """
 CREATE TABLE runs (
@@ -39,6 +39,12 @@ CREATE TABLE items (
     updated_at        TEXT NOT NULL,
     final_round       INTEGER,
     rejection_reasons TEXT,
+    -- Watermark: the max responses.rowid this item has consumed. The dispatcher
+    -- advances an item when a response with rowid > consumed_seq exists. rowid is
+    -- a strictly-monotonic integer (responses are append-only), unlike a
+    -- wall-clock received_at which can tie at microsecond resolution. (Kept last
+    -- to match the v3 ALTER ... ADD COLUMN position — see _MIGRATIONS.)
+    consumed_seq      INTEGER NOT NULL DEFAULT 0,
     UNIQUE(run_id, source_id)
 );
 CREATE INDEX items_run_state ON items(run_id, state, updated_at);
@@ -128,6 +134,7 @@ CREATE TABLE accepted (
 # (target_version, ddl) applied in order to upgrade old dbs; fresh dbs get _SCHEMA_SQL.
 _MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (2, ("ALTER TABLE solver_scores ADD COLUMN correct INTEGER",)),
+    (3, ("ALTER TABLE items ADD COLUMN consumed_seq INTEGER NOT NULL DEFAULT 0",)),
 )
 
 

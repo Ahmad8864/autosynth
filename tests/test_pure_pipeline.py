@@ -751,7 +751,8 @@ def test_judge_scores_complete_emits_loop_judge(domain, grounding):
 def test_decision_accept(grounding):
     res = _judge_step(_decided_item(grounding), [_loop_judge_resp(verdict="accept")], grounding)
     assert res.state.state == State.ACCEPTED
-    assert res.completed_round is not None and res.completed_round.evaluation.accepted is True
+    assert res.completed_round is not None and res.completed_round.evaluation is not None
+    assert res.completed_round.evaluation.accepted is True
 
 
 def test_decision_improve_bumps_round_with_suggestion(grounding):
@@ -765,7 +766,8 @@ def test_decision_improve_bumps_round_with_suggestion(grounding):
     assert res.state.current_round == 2
     assert "add a numeric trap" in res.state.last_feedback
     assert [r.role for r in res.new_requests] == ["challenger"]
-    assert res.completed_round is not None and res.completed_round.evaluation.accepted is False
+    assert res.completed_round is not None and res.completed_round.evaluation is not None
+    assert res.completed_round.evaluation.accepted is False
 
 
 def test_decision_improve_at_max_rounds_rejects(grounding):
@@ -864,6 +866,7 @@ def test_short_circuit_skips_strong_when_weak_too_capable(domain, grounding):
     )
     assert res.state.state == State.NEED_REFLECTION
     assert not any(r.role == "strong" for r in res.new_requests)
+    assert res.completed_round is not None
     ev = res.completed_round.evaluation
     assert ev is not None and ev.accepted is False
     assert any("short_circuit" in r for r in ev.rejection_reasons)

@@ -242,7 +242,7 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
         )
 
     if cfg.safety.enabled and safety_filter is not None:
-        verdict = safety_filter(_payload_text(candidate.payload))
+        verdict = safety_filter(_safety_text(candidate))
         if not verdict.allowed:
             return _go_to_reflection_or_reject(
                 replace(item, candidate=candidate),
@@ -748,6 +748,24 @@ def _go_to_reflection_or_reject(
     return StepResult(state=new_state, new_requests=(), completed_round=round_obj)
 
 
-def _payload_text(payload: dict) -> str:
-    """Concatenate stringy/numeric payload values for the safety filter."""
-    return " ".join(str(v) for v in payload.values() if isinstance(v, (str, int, float)))
+def _safety_text(candidate: Candidate) -> str:
+    """Text scanned by the safety filter: every nested string/number value in the
+    payload plus the reference answer (where a leaked PII value most often lands)."""
+    parts: list[str] = []
+    _collect_text(candidate.payload, parts)
+    if candidate.reference_output:
+        parts.append(candidate.reference_output)
+    return " ".join(parts)
+
+
+def _collect_text(value: Any, out: list[str]) -> None:
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, (int, float)):  # bool is an int subclass; harmless
+        out.append(str(value))
+    elif isinstance(value, dict):
+        for v in value.values():
+            _collect_text(v, out)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _collect_text(v, out)
