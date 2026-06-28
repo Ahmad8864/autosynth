@@ -264,3 +264,49 @@ def test_verifiable_math_e2e(output_dir: Path):
     assert by_solver["strong"] and all(c == 1 and t == 1.0 for c, t in by_solver["strong"])
     assert by_solver["weak"] and all(c == 0 and t == 0.0 for c, t in by_solver["weak"])
     assert store.conn.execute("SELECT COUNT(*) FROM requests WHERE role='judge'").fetchone()[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Judge-decided mode end-to-end (loop-judge accept, NEED_SCORES → NEED_DECISION)
+# ---------------------------------------------------------------------------
+
+
+def _judge_loop_handler(role: str, messages):
+    all_text = " ".join(m.get("content", "") for m in messages)
+    if "ROLE:CHALLENGER" in all_text or role == "challenger":
+        return json.dumps(
+            {
+                "payload": {"question": "What is the contribution?", "context": "ctx"},
+                "reference_output": "the contribution",
+                "rubric": [{"id": "c1", "description": "names it", "weight": 5}],
+            }
+        )
+    if "ROLE:QUALITY" in all_text:
+        return json.dumps({"passed": True, "failures": [], "notes": "ok"})
+    if "ROLE:LOOP_JUDGE" in all_text or role == "loop_judge":
+        return json.dumps(
+            {"verdict": "accept", "grpo_suitability": "high", "reason": "clean gap", "suggestion": ""}
+        )
+    if "ROLE:JUDGE" in all_text or role == "judge":
+        total = 0.2 if "[solver=weak]" in all_text else 0.9
+        return json.dumps({"per_criterion": {"c1": total}, "total": total, "failure_modes": []})
+    if "ROLE:WEAK" in all_text or role == "weak":
+        return "weak answer"
+    if "ROLE:STRONG" in all_text or role == "strong":
+        return "strong, source-grounded answer"
+    return "{}"
+
+
+register_mock("judge_loop", _judge_loop_handler)
+
+
+def test_judge_policy_e2e(sample_docs: Path, output_dir: Path):
+    cfg = _cfg(sample_docs, output_dir, "judge_loop")
+    cfg.acceptance = AcceptanceConfig(mode="judge")
+    runner = Runner(cfg, run_id="test-run")
+    summary = runner.run()
+    assert summary.accepted == 2 and summary.rejected == 0
+
+    store = Store(runner.run_dir / "run.db")
+    # The async loop-judge decision ran for each accepted item (NEED_DECISION state).
+    assert store.conn.execute("SELECT COUNT(*) FROM requests WHERE role='loop_judge'").fetchone()[0] == 2

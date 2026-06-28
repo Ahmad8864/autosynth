@@ -7,6 +7,7 @@ except ImportError:
 
 from autosynth.acceptance import (
     AcceptancePolicy,
+    JudgePolicy,
     ThresholdPolicy,
     VerifiablePolicy,
     resolve_policy,
@@ -69,6 +70,7 @@ __all__ = [
     "load_config",
     # Acceptance policies
     "AcceptancePolicy",
+    "JudgePolicy",
     "ThresholdPolicy",
     "VerifiablePolicy",
     "resolve_policy",

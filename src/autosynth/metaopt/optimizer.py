@@ -1,8 +1,10 @@
 """MetaOptimizer: the evolutionary loop over HarnessSpecs.
 
-For each iteration: pick a parent by Boltzmann sampling on train score, ask
-the mutator LLM for a diff, evaluate the child on train items, and accept
-only if validation also improves on the parent.
+For each iteration: pick a parent by Boltzmann sampling on its *mean*
+validation score, re-evaluate that parent on val (accumulating samples, capped)
+so the gate compares against a stable mean, ask the mutator LLM for a diff,
+evaluate the child on train (for failure analysis) and val, and accept only if
+the child's val score exceeds the parent's val mean.
 """
 
 from __future__ import annotations
@@ -82,6 +84,7 @@ class MetaOptimizer:
             HarnessRecord(
                 spec=self.seed_harness,
                 train_score=seed_train_rate,
+                val_scores=[seed_val_rate],
                 val_score=seed_val_rate,
                 accepted=True,
             )
@@ -95,6 +98,13 @@ class MetaOptimizer:
             iter_dir = self.root / "iterations" / f"iter_{it:03d}"
             iter_dir.mkdir(parents=True, exist_ok=True)
             write_pydantic(iter_dir / "parent_harness.json", parent.spec)
+
+            # Re-evaluate the parent on val (capped) so the accept gate compares
+            # the child against a stable mean, not a single noisy draw.
+            if len(parent.val_scores) < self.meta.max_val_reevals:
+                parent_val, _ = self._eval(parent.spec, "val", iter_n=it)
+                parent.val_scores.append(parent_val)
+                parent.val_score = parent_val
 
             # Collect failures from the parent's most recent training run.
             failure_summary = self._collect_failures(parent.spec)
@@ -120,59 +130,37 @@ class MetaOptimizer:
                 )
                 continue
 
+            # Train eval feeds failure analysis only; the accept gate is val-only.
             train_rate, _ = self._eval(child, "train", iter_n=it)
             child.train_score = train_rate
+            val_rate, _ = self._eval(child, "val", iter_n=it)
+            child.val_score = val_rate
 
-            decision_reasons: list[str] = []
-            val_rate: float | None = None
-            accepted = False
-            if train_rate <= parent.train_score:
-                decision_reasons.append(
-                    f"train_did_not_improve: child {train_rate:.3f} <= parent {parent.train_score:.3f}"
+            parent_val_mean = parent.val_mean if parent.val_mean is not None else 0.0
+            accepted = val_rate > parent_val_mean
+            decision_reasons = [
+                (
+                    f"accepted: child val {val_rate:.3f} > parent val_mean {parent_val_mean:.3f}"
+                    if accepted
+                    else f"val_did_not_improve: child val {val_rate:.3f} <= parent val_mean {parent_val_mean:.3f}"
                 )
-            else:
-                val_rate, _ = self._eval(child, "val", iter_n=it)
-                child.val_score = val_rate
-                if val_rate is None or val_rate <= (parent.val_score or 0.0):
-                    decision_reasons.append(
-                        f"val_did_not_improve: child {val_rate} <= parent {parent.val_score}"
-                    )
-                else:
-                    accepted = True
-                    decision_reasons.append(
-                        f"accepted: train {parent.train_score:.3f}->{train_rate:.3f}, "
-                        f"val {parent.val_score:.3f}->{val_rate:.3f}"
-                    )
+            ]
 
             self._record_iter(it, parent, child, mutation, train_rate, val_rate, accepted, decision_reasons)
 
+            self.population.append(
+                HarnessRecord(
+                    spec=child,
+                    train_score=train_rate,
+                    val_scores=[val_rate],
+                    val_score=val_rate,
+                    accepted=accepted,
+                    parent_accepted_id=parent.spec.harness_id,
+                )
+            )
             if accepted:
-                self.population.append(
-                    HarnessRecord(
-                        spec=child,
-                        train_score=train_rate,
-                        val_score=val_rate,
-                        accepted=True,
-                        parent_accepted_id=parent.spec.harness_id,
-                    )
-                )
-                logger.info(
-                    "[meta] iter {}: ACCEPTED child {} (train {:.3f}, val {:.3f})",
-                    it,
-                    child.harness_id,
-                    train_rate,
-                    val_rate or 0.0,
-                )
+                logger.info("[meta] iter {}: ACCEPTED child {} (val {:.3f})", it, child.harness_id, val_rate)
             else:
-                self.population.append(
-                    HarnessRecord(
-                        spec=child,
-                        train_score=train_rate,
-                        val_score=val_rate,
-                        accepted=False,
-                        parent_accepted_id=parent.spec.harness_id,
-                    )
-                )
                 logger.info("[meta] iter {}: rejected child ({})", it, "; ".join(decision_reasons))
 
             self._save_state(iter_n=it)
@@ -187,7 +175,7 @@ class MetaOptimizer:
             "accepted_mutations": sum(1 for r in self.population if r.accepted) - 1,  # -1 for seed
             "best_harness_id": best.spec.harness_id,
             "best_train": best.train_score,
-            "best_val": best.val_score,
+            "best_val": best.val_mean,
             "output_dir": str(self.root),
         }
 
@@ -265,4 +253,4 @@ class MetaOptimizer:
 
     def _best(self) -> HarnessRecord:
         accepted = [r for r in self.population if r.accepted]
-        return max(accepted, key=lambda r: (r.val_score or 0.0, r.train_score))
+        return max(accepted, key=lambda r: (r.val_mean if r.val_mean is not None else 0.0, r.train_score))

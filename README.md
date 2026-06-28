@@ -89,6 +89,15 @@ acceptance:
 
 The bundled `math_word_problems` domain ships in verifiable mode (exact-fraction answer checking).
 
+For messy, open-ended tasks where no fixed threshold fits, use **judge** mode: the rubric judge still scores every rollout, then a *loop-judge* reads the per-rollout weak/strong patterns and decides accept / improve, supplying the next round's suggestion directly (the reflector is skipped).
+
+```yaml
+acceptance:
+  mode: judge          # loop-judge decides per round; no weak_*/strong_* thresholds apply
+```
+
+**Conditional strong eval (cost saver).** Set `loop.short_circuit_strong: true` to run the weak solver first and only score the strong solver when the weak gate passes (the example is hard enough). This skips strong + judge calls on the ~80% of too-easy rounds, at the cost of serializing the round. Off by default; leave it off under `judge` mode, where it only adds serialization without skipping anything.
+
 ## Architecture
 
 The runtime is an event-sourced pipeline over a SQLite database. A pure `step()` function advances item state; the dispatcher fulfills LLM requests and writes responses back; the store is the durable record.

@@ -43,9 +43,12 @@ def _summarize_prior_rounds(
         if ev is None:
             continue
         if ev.weak_avg > weak_ceiling:
-            too_easy.append({**short, "weak_avg": ev.weak_avg})
-        if ev.strong_avg < strong_floor:
-            failed_strong.append({**short, "strong_avg": ev.strong_avg, "gap": ev.gap})
+            too_easy.append({**short, "weak_avg": ev.weak_avg, "weak_std": ev.weak_std})
+        # A round with no strong rollouts (short-circuited) is not "failed_strong".
+        if ev.strong_scores and ev.strong_avg < strong_floor:
+            failed_strong.append(
+                {**short, "strong_avg": ev.strong_avg, "gap": ev.gap, "weak_std": ev.weak_std}
+            )
     return {"too_easy": too_easy, "failed_strong": failed_strong, "failed_quality": failed_quality}
 
 

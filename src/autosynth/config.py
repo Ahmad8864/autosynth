@@ -62,11 +62,14 @@ class AcceptanceConfig(BaseModel):
       programmatic ``verify()``; acceptance is a count gate ("weak must fail,
       strong must succeed") via the ``verifiable_*`` knobs, which default to the
       paper's 4-rollout setting (weak ≤ 1 correct, strong ≥ 3).
+    - ``"judge"`` (paper §3.2 legal loop-judge): after the rubric judge scores
+      every rollout, a loop-judge LLM decides accept/improve per round and
+      supplies the next-round suggestion — no fixed thresholds.
 
     ``None`` defers to the domain's ``default_acceptance_mode``.
     """
 
-    mode: Literal["rubric", "verifiable"] | None = None
+    mode: Literal["rubric", "verifiable", "judge"] | None = None
 
     weak_avg_max: float = 0.65
     weak_max_max: float = 0.75
@@ -86,6 +89,7 @@ class LoopConfig(BaseModel):
     weak_samples: int = 3
     strong_samples: int = 3
     stop_on_first_accept: bool = True
+    short_circuit_strong: bool = False  # score the strong solver only when the weak gate passes (cost saver)
 
 
 class DomainConfig(BaseModel):
@@ -122,9 +126,11 @@ class DispatcherConfig(BaseModel):
 class MetaOptConfig(BaseModel):
     """Settings for the meta-optimization loop (paper §meta-opt).
 
-    The loop selects parents by Boltzmann sampling on training score, asks
-    the mutator LLM to propose an edit, evaluates the child on train items,
-    and accepts only if validation also improves on the parent.
+    The loop selects parents by Boltzmann sampling on their *mean* validation
+    score, asks the mutator LLM to propose an edit, and accepts only if the
+    child's validation score exceeds the parent's running mean. Accepted
+    parents are re-evaluated when re-sampled (up to ``max_val_reevals``) so the
+    accept gate isn't decided by a single noisy draw.
     """
 
     enabled: bool = False
@@ -133,6 +139,7 @@ class MetaOptConfig(BaseModel):
     train_size: int = 6
     val_size: int = 4
     val_seed: int = 1  # for deterministic train/val split
+    max_val_reevals: int = 5  # cap on val re-evaluations accumulated per harness
     # Mutator model — usually a strong reasoning model. Falls back to orchestrator.
     mutator: ModelConfig | None = None
     # If set, seed the population with the harness JSON at this path; otherwise DEFAULT_HARNESS.

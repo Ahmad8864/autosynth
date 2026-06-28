@@ -72,9 +72,11 @@ class EvalReport(BaseModel):
     weak_avg: float = 0.0
     weak_max: float = 0.0
     weak_min: float = 0.0
+    weak_std: float = 0.0  # per-prompt rollout spread; a GRPO-suitability signal (paper §3.2)
     strong_avg: float = 0.0
     strong_max: float = 0.0
     strong_min: float = 0.0
+    strong_std: float = 0.0
     gap: float = 0.0
     accepted: bool = False
     rejection_reasons: list[str] = Field(default_factory=list)

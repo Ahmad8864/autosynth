@@ -9,14 +9,14 @@ from autosynth.metaopt.records import HarnessRecord
 
 
 def boltzmann_select(records: list[HarnessRecord], temperature: float, rng: random.Random) -> HarnessRecord:
-    """Select a parent record proportional to exp(train_score / T)."""
+    """Select a parent record proportional to exp(val_mean / T)."""
     accepted = [r for r in records if r.accepted]
     if not accepted:
         accepted = records
     if len(accepted) == 1:
         return accepted[0]
     T = max(temperature, 1e-6)
-    scores = [r.train_score for r in accepted]
+    scores = [r.val_mean if r.val_mean is not None else 0.0 for r in accepted]
     max_s = max(scores)
     # Subtract max for numerical stability; same softmax up to constant.
     weights = [math.exp((s - max_s) / T) for s in scores]

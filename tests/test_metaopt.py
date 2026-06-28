@@ -32,7 +32,13 @@ from autosynth.metaopt import (
 def _record(score: float, hid: str = "h") -> HarnessRecord:
     spec = make_harness(challenger_rules=[hid])
     spec.harness_id = hid
-    return HarnessRecord(spec=spec, train_score=score, accepted=True)
+    return HarnessRecord(spec=spec, train_score=score, val_scores=[score], accepted=True)
+
+
+def test_val_mean_averages_scores_else_falls_back():
+    assert _record(0.0).model_copy(update={"val_scores": [0.2, 0.4]}).val_mean == pytest.approx(0.3)
+    assert HarnessRecord(spec=make_harness(), val_scores=[], val_score=0.7).val_mean == 0.7
+    assert HarnessRecord(spec=make_harness(), val_scores=[]).val_mean is None
 
 
 def test_boltzmann_selects_higher_at_low_temp():
@@ -168,7 +174,8 @@ def test_metaopt_loop_runs_end_to_end(tmp_path: Path):
 
 def test_metaopt_accepts_improving_mutation(tmp_path: Path):
     """With the 'metaopt' mock, adding the marker rule lifts the strong score,
-    so the train rate improves over the seed and the mutation is accepted."""
+    so the child's val rate exceeds the seed's val mean and the mutation is
+    accepted on the val-only gate."""
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.md").write_text("# A\nDoc A.")
@@ -189,6 +196,10 @@ def test_metaopt_accepts_improving_mutation(tmp_path: Path):
     assert accepted_children, f"no mutation was accepted; pop={[r.model_dump() for r in pop]}"
     # The accepted child must contain the marker rule the mock mutator proposed.
     assert any("Target a quantitative" in r for r in accepted_children[0].spec.challenger_rules)
+    # The seed (parent) was re-evaluated on val this iteration, so it accumulated
+    # a second val sample beyond its initial one.
+    seed = next(r for r in pop if r.spec.parent_id is None)
+    assert len(seed.val_scores) >= 2
 
 
 def test_metaopt_requires_enabled_flag(tmp_path: Path):

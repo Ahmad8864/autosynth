@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from autosynth.acceptance import VerifiablePolicy
+from autosynth.acceptance import JudgePolicy, VerifiablePolicy
 from autosynth.config import (
     AcceptanceConfig,
     DomainConfig,
@@ -678,3 +678,234 @@ def test_verified_dedups_redelivered_solver(grounding):
     )
     assert len(res.state.weak_scores) == 2  # attempt 0 not double-counted
     assert len(res.scores_to_persist) == 1  # only the genuinely new attempt
+
+
+# ---------------------------------------------------------------------------
+# Judge-decided policy — NEED_SCORES → NEED_DECISION → accept / improve
+# ---------------------------------------------------------------------------
+
+
+def _loop_judge_resp(*, verdict="improve", suggestion="harder", reason="too easy", round_n=1) -> StepResponse:
+    body = {"verdict": verdict, "grpo_suitability": "low", "reason": reason, "suggestion": suggestion}
+    return StepResponse(
+        request_id=stable_id("i1", round_n, "loop_judge", 0),
+        role="loop_judge",
+        round_n=round_n,
+        attempt=0,
+        text=json.dumps(body),
+    )
+
+
+def _decided_item(grounding, *, current_round=1, **overrides):
+    return _seed_item(
+        grounding,
+        state=State.NEED_DECISION,
+        current_round=current_round,
+        candidate=_make_candidate(grounding.source_id),
+        quality=_pass_quality(),
+        weak_scores=(SolverScore(solver="weak", attempt=0, raw_response="x", total=0.2),),
+        strong_scores=(SolverScore(solver="strong", attempt=0, raw_response="x", total=0.8),),
+        **overrides,
+    )
+
+
+def _judge_step(item, responses, grounding, **cfg_kw):
+    return step(
+        item,
+        responses,
+        cfg=_cfg(weak=2, strong=2, **cfg_kw),
+        harness=DEFAULT_HARNESS,
+        domain=QAFromDocuments(source_dir="/tmp"),
+        grounding=grounding,
+        policy=JudgePolicy(AcceptanceConfig()),
+    )
+
+
+def test_judge_scores_complete_emits_loop_judge(domain, grounding):
+    item = _seed_item(
+        grounding,
+        state=State.NEED_SCORES,
+        candidate=_make_candidate(grounding.source_id),
+        quality=_pass_quality(),
+    )
+    res = step(
+        item,
+        [
+            _judge_resp(solver_role="weak", attempt=0, total=0.2),
+            _judge_resp(solver_role="weak", attempt=1, total=0.2),
+            _judge_resp(solver_role="strong", attempt=0, total=0.9),
+            _judge_resp(solver_role="strong", attempt=1, total=0.85),
+        ],
+        cfg=_cfg(weak=2, strong=2),
+        harness=DEFAULT_HARNESS,
+        domain=domain,
+        grounding=grounding,
+        policy=JudgePolicy(AcceptanceConfig()),
+    )
+    assert res.state.state == State.NEED_DECISION
+    assert [r.role for r in res.new_requests] == ["loop_judge"]
+    assert res.completed_round is None  # not finalized until the judge decides
+    assert len(res.scores_to_persist) == 4
+
+
+def test_decision_accept(grounding):
+    res = _judge_step(_decided_item(grounding), [_loop_judge_resp(verdict="accept")], grounding)
+    assert res.state.state == State.ACCEPTED
+    assert res.completed_round is not None and res.completed_round.evaluation.accepted is True
+
+
+def test_decision_improve_bumps_round_with_suggestion(grounding):
+    res = _judge_step(
+        _decided_item(grounding),
+        [_loop_judge_resp(verdict="improve", suggestion="add a numeric trap")],
+        grounding,
+        max_rounds=3,
+    )
+    assert res.state.state == State.NEED_CANDIDATE  # straight to next round, no reflector
+    assert res.state.current_round == 2
+    assert "add a numeric trap" in res.state.last_feedback
+    assert [r.role for r in res.new_requests] == ["challenger"]
+    assert res.completed_round is not None and res.completed_round.evaluation.accepted is False
+
+
+def test_decision_improve_at_max_rounds_rejects(grounding):
+    res = _judge_step(
+        _decided_item(grounding, current_round=2),
+        [_loop_judge_resp(verdict="improve", round_n=2)],
+        grounding,
+        max_rounds=2,
+    )
+    assert res.state.state == State.REJECTED
+    assert res.completed_round is not None
+
+
+def test_decision_noop_without_response(grounding):
+    item = _decided_item(grounding)
+    res = _judge_step(item, [], grounding)
+    assert res.state == item
+    assert res.new_requests == ()
+
+
+# ---------------------------------------------------------------------------
+# Conditional strong-solver evaluation (loop.short_circuit_strong)
+# ---------------------------------------------------------------------------
+
+
+def _sc_cfg(**kw):
+    cfg = _cfg(**kw)
+    cfg.loop.short_circuit_strong = True
+    return cfg
+
+
+def _weak_score(total: float, attempt: int = 0):
+    return SolverScore(solver="weak", attempt=attempt, raw_response="x", total=total)
+
+
+def test_short_circuit_emits_weak_only(domain, grounding):
+    item = _seed_item(grounding, state=State.NEED_QUALITY, candidate=_make_candidate(grounding.source_id))
+    quality_resp = StepResponse(
+        request_id=stable_id("i1", 1, "quality", 0),
+        role="quality",
+        round_n=1,
+        attempt=0,
+        text=json.dumps({"passed": True, "failures": [], "notes": "ok"}),
+    )
+    res = step(
+        item,
+        [quality_resp],
+        cfg=_sc_cfg(weak=2, strong=2),
+        harness=DEFAULT_HARNESS,
+        domain=domain,
+        grounding=grounding,
+    )
+    assert res.state.state == State.NEED_SCORES
+    assert {r.role for r in res.new_requests} == {"weak"}  # strong withheld
+    assert len(res.new_requests) == 2
+
+
+def test_short_circuit_runs_strong_when_weak_hard(domain, grounding):
+    # weak appropriately fails (low scores) -> gate passes -> strong is emitted
+    item = _seed_item(
+        grounding,
+        state=State.NEED_SCORES,
+        candidate=_make_candidate(grounding.source_id),
+        quality=_pass_quality(),
+        weak_scores=(_weak_score(0.2),),
+    )
+    res = step(
+        item,
+        [_judge_resp(solver_role="weak", attempt=1, total=0.2)],
+        cfg=_sc_cfg(weak=2, strong=2),
+        harness=DEFAULT_HARNESS,
+        domain=domain,
+        grounding=grounding,
+    )
+    assert res.state.state == State.NEED_SCORES
+    assert {r.role for r in res.new_requests} == {"strong"}  # strong now emitted
+    assert len(res.new_requests) == 2
+
+
+def test_short_circuit_skips_strong_when_weak_too_capable(domain, grounding):
+    # weak solves it too well (high scores) -> gate fails -> strong skipped, reflect
+    item = _seed_item(
+        grounding,
+        state=State.NEED_SCORES,
+        candidate=_make_candidate(grounding.source_id),
+        quality=_pass_quality(),
+        weak_scores=(_weak_score(0.7),),
+    )
+    res = step(
+        item,
+        [_judge_resp(solver_role="weak", attempt=1, total=0.7)],
+        cfg=_sc_cfg(weak=2, strong=2, max_rounds=3),
+        harness=DEFAULT_HARNESS,
+        domain=domain,
+        grounding=grounding,
+    )
+    assert res.state.state == State.NEED_REFLECTION
+    assert not any(r.role == "strong" for r in res.new_requests)
+    ev = res.completed_round.evaluation
+    assert ev is not None and ev.accepted is False
+    assert any("short_circuit" in r for r in ev.rejection_reasons)
+
+
+def test_short_circuit_disarms_once_strong_scoring(domain, grounding):
+    # strong already scoring -> short-circuit branch does not re-emit strong
+    item = _seed_item(
+        grounding,
+        state=State.NEED_SCORES,
+        candidate=_make_candidate(grounding.source_id),
+        quality=_pass_quality(),
+        weak_scores=(_weak_score(0.2), _weak_score(0.2, attempt=1)),
+        strong_scores=(SolverScore(solver="strong", attempt=0, raw_response="x", total=0.9),),
+    )
+    res = step(
+        item,
+        [_judge_resp(solver_role="strong", attempt=1, total=0.9)],
+        cfg=_sc_cfg(weak=2, strong=2),
+        harness=DEFAULT_HARNESS,
+        domain=domain,
+        grounding=grounding,
+    )
+    # both strong scores now in -> finalize (accept), not a re-emit of strong solvers
+    assert res.state.state == State.ACCEPTED
+    assert not any(r.role == "strong" for r in res.new_requests)
+
+
+def test_short_circuit_strong_samples_zero_does_not_stall(domain, grounding):
+    item = _seed_item(
+        grounding,
+        state=State.NEED_SCORES,
+        candidate=_make_candidate(grounding.source_id),
+        quality=_pass_quality(),
+        weak_scores=(_weak_score(0.2),),
+    )
+    res = step(
+        item,
+        [_judge_resp(solver_role="weak", attempt=1, total=0.2)],
+        cfg=_sc_cfg(weak=2, strong=0, max_rounds=1),
+        harness=DEFAULT_HARNESS,
+        domain=domain,
+        grounding=grounding,
+    )
+    assert res.state.state != State.NEED_SCORES  # finalizes instead of stranding

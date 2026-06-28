@@ -8,10 +8,13 @@ All notable changes to this project are documented here. The format is based on 
 
 - New `verifiable` acceptance mode for tasks with checkable answers (math, code, exact extraction): correctness is checked programmatically instead of by the LLM judge. Enable with `acceptance.mode: verifiable`.
 - The bundled `math_word_problems` domain now uses verifiable mode by default, checking answers for exact numeric equality.
+- New `judge` acceptance mode: an LLM decides accept/improve each round instead of fixed thresholds, for open-ended tasks where no threshold fits. Enable with `acceptance.mode: judge`.
+- Optional conditional strong-solver evaluation (`loop.short_circuit_strong: true`): skip the strong solver on too-easy examples to save cost. Off by default.
 
 ### Changed
 
 - Runs created by older versions keep resuming: their databases are upgraded automatically on open.
+- Meta-optimization gates on validation score alone and averages repeated evaluations of a candidate, so acceptance isn't decided by a single noisy run.
 
 ## [0.1.1] - 2026-05-12
 

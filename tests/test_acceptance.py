@@ -2,11 +2,14 @@ import pytest
 from loguru import logger
 
 from autosynth.acceptance import (
+    JudgePolicy,
     ThresholdPolicy,
     VerifiablePolicy,
     evaluate,
     resolve_policy,
+    weak_gate_report,
 )
+from autosynth.agents.loop_judge import LoopJudgeVerdict, parse_verdict
 from autosynth.config import AcceptanceConfig, DomainConfig, LoopConfig, RunConfig
 from autosynth.domain import DomainAdapter
 from autosynth.domains.math_word_problems import MathWordProblems
@@ -112,6 +115,27 @@ def test_threshold_policy_matches_evaluate():
     assert pol.strong_floor == crit.strong_avg_min
 
 
+def test_report_includes_rollout_std():
+    rep = evaluate(
+        weak_scores=_score("weak", [0.2, 0.4]),
+        strong_scores=_score("strong", [0.7, 0.9]),
+        quality=QualityCheck(passed=True),
+        criteria=AcceptanceConfig(),
+    )
+    assert rep.weak_std == pytest.approx(0.1)
+    assert rep.strong_std == pytest.approx(0.1)
+
+
+def test_report_std_zero_for_single_rollout():
+    rep = evaluate(
+        weak_scores=_score("weak", [0.3]),
+        strong_scores=_score("strong", [0.8]),
+        quality=QualityCheck(passed=True),
+        criteria=AcceptanceConfig(),
+    )
+    assert rep.weak_std == 0.0 and rep.strong_std == 0.0
+
+
 # --- verifiable regime (VerifiablePolicy) ----------------------------------
 
 
@@ -170,6 +194,73 @@ def test_verifiable_gate_reads_total_not_correct():
     assert rep.accepted, rep.rejection_reasons
 
 
+# --- weak gate (short-circuit strong evaluation) ---------------------------
+
+
+def test_threshold_weak_gate_passes_when_weak_appropriately_fails():
+    pol = ThresholdPolicy(AcceptanceConfig(forbid_weak_zero=False))
+    assert pol.weak_gate_passes(_score("weak", [0.2, 0.3])) is True
+    assert pol.weak_gate_passes(_score("weak", [0.7, 0.8])) is False  # too capable
+
+
+def test_verifiable_weak_gate_passes_on_count():
+    pol = _verifiable_policy()  # verifiable_weak_max_correct=1
+    assert pol.weak_gate_passes(_score("weak", [1.0, 0.0, 0.0, 0.0])) is True  # 1 <= 1
+    assert pol.weak_gate_passes(_score("weak", [1.0, 1.0, 0.0, 0.0])) is False  # 2 > 1
+
+
+def test_base_weak_gate_defaults_true():
+    assert JudgePolicy(AcceptanceConfig()).weak_gate_passes([]) is True
+
+
+def test_weak_gate_report_is_explicit_and_strongless():
+    rep = weak_gate_report(_score("weak", [0.7]))
+    assert rep.accepted is False
+    assert any("short_circuit" in r for r in rep.rejection_reasons)
+    assert rep.strong_scores == []  # no strong rollouts -> reflector won't mislabel failed_strong
+
+
+# --- judge regime (JudgePolicy) --------------------------------------------
+
+
+def test_judge_policy_flags():
+    pol = JudgePolicy(AcceptanceConfig())
+    assert pol.decides_async is True and pol.requires_judge is True
+
+
+def test_judge_policy_decide_accept():
+    v = LoopJudgeVerdict(accept=True, grpo_suitability="high", reason="clean separation", suggestion="")
+    d = JudgePolicy(AcceptanceConfig()).decide(
+        v, _score("weak", [0.2]), _score("strong", [0.8]), QualityCheck(passed=True)
+    )
+    assert d.report.accepted is True and d.feedback == ()
+    assert "grpo_suitability=high" in (d.report.acceptance_rationale or "")
+
+
+def test_judge_policy_decide_improve_carries_suggestion():
+    v = LoopJudgeVerdict(accept=False, grpo_suitability="low", reason="too easy", suggestion="make it harder")
+    d = JudgePolicy(AcceptanceConfig()).decide(
+        v, _score("weak", [0.7]), _score("strong", [0.7]), QualityCheck(passed=True)
+    )
+    assert d.report.accepted is False and d.feedback == ("make it harder",)
+
+
+def test_judge_policy_improve_feedback_never_empty():
+    # Empty suggestion must still yield non-empty feedback (no guidance-less retry).
+    v = LoopJudgeVerdict(accept=False, grpo_suitability="low", reason="", suggestion="")
+    d = JudgePolicy(AcceptanceConfig()).decide(v, [], [], QualityCheck(passed=True))
+    assert d.report.accepted is False and d.feedback and d.feedback[0]
+
+
+def test_parse_verdict_improve_accept_and_fallback():
+    v = parse_verdict(
+        '{"verdict": "improve", "grpo_suitability": "medium", "reason": "r", "suggestion": "s"}'
+    )
+    assert v.accept is False and v.suggestion == "s"
+    assert parse_verdict('{"verdict": "accept"}').accept is True
+    assert parse_verdict("not json").accept is False  # malformed -> defaults to improve
+
+
 # --- resolve_policy --------------------------------------------------------
 
 
@@ -192,6 +283,11 @@ def test_resolve_policy_config_overrides_domain():
     # force the verifiable math domain into rubric mode
     pol = resolve_policy(_cfg("math_word_problems", mode="rubric"), MathWordProblems())
     assert isinstance(pol, ThresholdPolicy)
+
+
+def test_resolve_policy_judge_mode():
+    pol = resolve_policy(_cfg("qa_from_documents", mode="judge"), QAFromDocuments(source_dir="."))
+    assert isinstance(pol, JudgePolicy)
 
 
 def test_resolve_policy_verifiable_requires_verify():
