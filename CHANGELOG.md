@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+### Added
+
+- New `verifiable` acceptance mode for tasks with checkable answers (math, code, exact extraction): correctness is checked programmatically instead of by the LLM judge. Enable with `acceptance.mode: verifiable`.
+- The bundled `math_word_problems` domain now uses verifiable mode by default, checking answers for exact numeric equality.
+
+### Changed
+
+- Runs created by older versions keep resuming: their databases are upgraded automatically on open.
+
 ## [0.1.1] - 2026-05-12
 
 Release-infrastructure and tooling pass. No user-facing functional changes.

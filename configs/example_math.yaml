@@ -14,17 +14,14 @@ domain:
 
 loop:
   max_rounds: 4
-  weak_samples: 3
-  strong_samples: 3
+  weak_samples: 4
+  strong_samples: 4
   stop_on_first_accept: true
 
 acceptance:
-  weak_avg_max: 0.60
-  weak_max_max: 0.80
-  forbid_weak_zero: false  # math solvers sometimes nail it by luck or fail entirely
-  strong_avg_min: 0.70
-  strong_avg_max: 0.98
-  min_gap: 0.25
+  mode: verifiable
+  verifiable_weak_max_correct: 1
+  verifiable_strong_min_correct: 3
 
 # Mix providers freely
 orchestrator:  { provider_model: openai/gpt-4o-mini,                temperature: 0.2 }

@@ -76,3 +76,12 @@ class $CLASS(DomainAdapter):
                 f"reference={candidate.reference_output} response={solver_response}"
             )},
         ]
+
+    # Optional: for tasks with a checkable answer, use verifiable acceptance
+    # (paper §3.3) instead of the judge above — set the class attribute and
+    # implement verify(). Must be pure/deterministic. See math_word_problems.py.
+    #
+    # default_acceptance_mode = "verifiable"
+    #
+    # def verify(self, candidate: Candidate, solver_response: str) -> bool | None:
+    #     return solver_response.strip() == (candidate.reference_output or "").strip()

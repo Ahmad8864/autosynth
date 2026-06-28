@@ -21,6 +21,7 @@ from typing import Any
 
 from autosynth.schemas import Candidate, EvalReport, QualityCheck, SolverScore
 from autosynth.store.schema import (
+    _MIGRATIONS,
     _SCHEMA_SQL,
     ITEM_PENDING,
     REQ_DONE,
@@ -74,7 +75,19 @@ class Store:
                 self.conn.executescript(_SCHEMA_SQL)
                 self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 self.conn.commit()
-            elif version != SCHEMA_VERSION:
+                return
+            if version > SCHEMA_VERSION:
+                raise RuntimeError(f"unsupported schema version {version}; expected {SCHEMA_VERSION}")
+            # Each step's DDL and its user_version bump run in one transaction,
+            # so an interrupted upgrade rolls back and re-runs on the next open.
+            for target, statements in _MIGRATIONS:
+                if version < target:
+                    with self.tx() as cur:
+                        for sql in statements:
+                            cur.execute(sql)
+                        cur.execute(f"PRAGMA user_version = {target}")
+                    version = target
+            if version != SCHEMA_VERSION:
                 raise RuntimeError(f"unsupported schema version {version}; expected {SCHEMA_VERSION}")
 
     @contextmanager
@@ -606,8 +619,8 @@ class Store:
             cur.execute(
                 """INSERT OR IGNORE INTO solver_scores
                    (score_id, round_id, solver, attempt, total, per_criterion,
-                    failure_modes, raw_response, solver_response_id, judge_response_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    failure_modes, raw_response, solver_response_id, judge_response_id, correct)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     score_id,
                     round_id,
@@ -619,6 +632,7 @@ class Store:
                     score.raw_response,
                     solver_response_id,
                     judge_response_id,
+                    None if score.correct is None else int(score.correct),
                 ),
             )
         return score_id
@@ -626,7 +640,7 @@ class Store:
     def scores_for_round(self, item_id: str, round_n: int) -> list[SolverScore]:
         round_id = self.round_id(item_id, round_n)
         cur = self.conn.execute(
-            """SELECT solver, attempt, total, per_criterion, failure_modes, raw_response
+            """SELECT solver, attempt, total, per_criterion, failure_modes, raw_response, correct
                FROM solver_scores WHERE round_id=? ORDER BY solver, attempt""",
             (round_id,),
         )
@@ -640,6 +654,7 @@ class Store:
                     total=row["total"],
                     per_criterion=_loads(row["per_criterion"]) or {},
                     failure_modes=_loads(row["failure_modes"]) or [],
+                    correct=None if row["correct"] is None else bool(row["correct"]),
                 )
             )
         return out

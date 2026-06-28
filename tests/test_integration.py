@@ -18,6 +18,7 @@ from autosynth.config import (
     ModelConfig,
     RunConfig,
 )
+from autosynth.llm import register_mock
 from autosynth.runner import Runner, _build_llm_config
 from autosynth.store import Store
 
@@ -195,3 +196,71 @@ def test_export_jsonl_via_store(sample_docs: Path, output_dir: Path, tmp_path: P
     assert n == 2
     records = [json.loads(line) for line in out.read_text().splitlines()]
     assert all(r["gap"] is not None for r in records)
+
+
+# ---------------------------------------------------------------------------
+# Verifiable mode end-to-end (math, programmatic verify(), no judge)
+# ---------------------------------------------------------------------------
+
+
+def _verifiable_math_handler(role: str, messages):
+    all_text = " ".join(m.get("content", "") for m in messages)
+    if "ROLE:CHALLENGER" in all_text or role == "challenger":
+        return json.dumps(
+            {
+                "payload": {"problem": "What is 6 times 7?", "topic": "arithmetic", "difficulty": "easy"},
+                "reference_output": "42",
+                "rubric": [{"id": "c1", "description": "correct final answer", "weight": 7}],
+            }
+        )
+    if "ROLE:QUALITY" in all_text:
+        return json.dumps({"passed": True, "failures": [], "notes": "ok"})
+    if "ROLE:WEAK" in all_text or role == "weak":
+        return "I'll guess. ANSWER: 41"
+    if "ROLE:STRONG" in all_text or role == "strong":
+        return "6 * 7 = 42. ANSWER: 42"
+    return "{}"
+
+
+register_mock("verifiable_math", _verifiable_math_handler)
+
+
+def _math_cfg(output_dir: Path) -> RunConfig:
+    return RunConfig(
+        run_id="math-run",
+        output_dir=str(output_dir),
+        max_examples=2,
+        domain=DomainConfig(
+            name="math_word_problems",
+            params={
+                "topics": [
+                    {"topic": "arithmetic", "difficulty": "easy"},
+                    {"topic": "more", "difficulty": "easy"},
+                ]
+            },
+        ),
+        loop=LoopConfig(max_rounds=2, weak_samples=4, strong_samples=4),
+        acceptance=AcceptanceConfig(
+            mode="verifiable", verifiable_weak_max_correct=1, verifiable_strong_min_correct=3
+        ),
+        orchestrator=ModelConfig(provider_model="mock/verifiable_math"),
+        challenger=ModelConfig(provider_model="mock/verifiable_math"),
+        weak_solver=ModelConfig(provider_model="mock/verifiable_math"),
+        strong_solver=ModelConfig(provider_model="mock/verifiable_math"),
+        judge=ModelConfig(provider_model="mock/verifiable_math"),
+        dispatcher=DispatcherConfig(concurrency=4, items_per_advance=10, poll_interval_s=0.0),
+    )
+
+
+def test_verifiable_math_e2e(output_dir: Path):
+    runner = Runner(_math_cfg(output_dir))
+    summary = runner.run()
+    assert summary.accepted == 2 and summary.rejected == 0
+
+    store = Store(runner.run_dir / "run.db")
+    by_solver: dict[str, list] = {}
+    for r in store.conn.execute("SELECT solver, correct, total FROM solver_scores"):
+        by_solver.setdefault(r["solver"], []).append((r["correct"], r["total"]))
+    assert by_solver["strong"] and all(c == 1 and t == 1.0 for c, t in by_solver["strong"])
+    assert by_solver["weak"] and all(c == 0 and t == 0.0 for c, t in by_solver["weak"])
+    assert store.conn.execute("SELECT COUNT(*) FROM requests WHERE role='judge'").fetchone()[0] == 0

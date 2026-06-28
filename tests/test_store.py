@@ -8,6 +8,8 @@ from MIGRATION_PLAN.md §4.2, and JSONL export.
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from autosynth.store import (
     SCHEMA_VERSION,
     Store,
 )
+from autosynth.store.schema import _SCHEMA_SQL
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -355,6 +358,110 @@ def test_scores_for_round_round_trip(store: Store):
     out = store.scores_for_round(iid, 1)
     assert len(out) == 4
     assert {s.solver for s in out} == {"weak", "strong"}
+
+
+def test_score_persists_correct(store: Store):
+    """Verifiable scores round-trip the correct verdict (True/False/None)."""
+    iid = store.insert_item(run_id="r1", source_id="s1", domain="math", state="NEED_SCORES")
+    store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
+    store.insert_requests([_request(iid, request_id="sol0")])
+    store.claim_pending(1)
+    store.insert_response(request_id="sol0", model="m", text="ANSWER: 42")
+    for solver, attempt, correct in [("weak", 0, False), ("weak", 1, None), ("strong", 0, True)]:
+        score = SolverScore(
+            solver=solver,
+            attempt=attempt,
+            raw_response="x",
+            total=1.0 if correct else 0.0,
+            correct=correct,
+        )
+        # No judge in verifiable mode: judge_response_id self-references the solver response.
+        store.insert_score(
+            item_id=iid, round_n=1, score=score, solver_response_id="sol0", judge_response_id="sol0"
+        )
+    out = {(s.solver, s.attempt): s.correct for s in store.scores_for_round(iid, 1)}
+    assert out[("weak", 0)] is False
+    assert out[("weak", 1)] is None
+    assert out[("strong", 0)] is True
+
+
+def test_migration_v1_to_v2_adds_correct(tmp_path: Path):
+    """A v1 db gains the correct column on open, preserving old rows; reopen is idempotent."""
+    db = tmp_path / "v1.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE solver_scores (score_id TEXT PRIMARY KEY, total REAL NOT NULL);"
+        "INSERT INTO solver_scores (score_id, total) VALUES ('old', 0.5);"
+    )
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    store = Store(db)  # _migrate runs 1 -> 2
+    try:
+        cols = {r[1] for r in store.conn.execute("PRAGMA table_info(solver_scores)")}
+        assert "correct" in cols
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        row = store.conn.execute("SELECT total, correct FROM solver_scores WHERE score_id='old'").fetchone()
+        assert row["total"] == pytest.approx(0.5)
+        assert row["correct"] is None  # old rows default to NULL
+    finally:
+        store.close()
+    Store(db).close()  # reopening at v2 must not re-run the ALTER
+
+
+def _schema_fingerprint(conn: sqlite3.Connection) -> dict:
+    """Backend-level schema: per table, its columns and indexes (names elided so
+    auto-index naming doesn't matter — only shape and constraints are compared)."""
+    tables = sorted(
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    )
+    fp: dict = {}
+    for t in tables:
+        cols = [
+            (r["name"], r["type"], r["notnull"], r["pk"]) for r in conn.execute(f"PRAGMA table_info({t})")
+        ]
+        idx = []
+        for ix in conn.execute(f"PRAGMA index_list({t})"):
+            members = tuple(r["name"] for r in conn.execute(f"PRAGMA index_info({ix['name']})"))
+            idx.append((ix["unique"], ix["origin"], members))
+        fp[t] = {"columns": cols, "indexes": sorted(idx)}
+    return fp
+
+
+def test_fresh_and_migrated_schema_converge(tmp_path: Path):
+    """A fresh install (_SCHEMA_SQL) and an old db walked through _MIGRATIONS must
+    end at identical schema — the guard against the two sources of truth drifting
+    (e.g. a column added to one but not the other).
+
+    The v1 baseline is the current schema minus the v2 delta. When a later
+    migration lands, snapshot the prior version's schema here the same way.
+    """
+    fresh = Store(tmp_path / "fresh.db")
+    try:
+        expected = _schema_fingerprint(fresh.conn)
+    finally:
+        fresh.close()
+
+    v1_sql = re.sub(r"\n\s*correct\s+INTEGER,", "", _SCHEMA_SQL)
+    db = tmp_path / "v1.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(v1_sql)
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    v1_cols = {r[1] for r in conn.execute("PRAGMA table_info(solver_scores)")}
+    conn.close()
+    assert "correct" not in v1_cols  # sanity: baseline really is pre-v2
+
+    migrated = Store(db)  # _migrate runs 1 -> 2
+    try:
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert _schema_fingerprint(migrated.conn) == expected
+    finally:
+        migrated.close()
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """
 CREATE TABLE runs (
@@ -107,7 +107,10 @@ CREATE TABLE solver_scores (
     failure_modes      TEXT,
     raw_response       TEXT,
     solver_response_id TEXT NOT NULL REFERENCES responses(response_id),
+    -- In verifiable mode there is no judge: judge_response_id self-references
+    -- the solver response, and correct holds the verify() verdict (else NULL).
     judge_response_id  TEXT NOT NULL REFERENCES responses(response_id),
+    correct            INTEGER,
     UNIQUE(round_id, solver, attempt)
 );
 CREATE INDEX scores_round ON solver_scores(round_id, solver);
@@ -120,6 +123,12 @@ CREATE TABLE accepted (
     accepted_at        TEXT NOT NULL
 );
 """
+
+
+# (target_version, ddl) applied in order to upgrade old dbs; fresh dbs get _SCHEMA_SQL.
+_MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (2, ("ALTER TABLE solver_scores ADD COLUMN correct INTEGER",)),
+)
 
 
 RUN_STATUS_RUNNING = "running"

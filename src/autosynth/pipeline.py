@@ -22,13 +22,13 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from autosynth.acceptance import AcceptancePolicy, ThresholdPolicy
 from autosynth.agents import challenger as challenger_agent
 from autosynth.agents import reflector as reflector_agent
 from autosynth.agents import solver as solver_agent
 from autosynth.agents import verifier as verifier_agent
 from autosynth.config import ModelConfig, RunConfig
 from autosynth.domain import DomainAdapter, GroundingItem
-from autosynth.evaluator import evaluate
 from autosynth.harness import DEFAULT_HARNESS, HarnessSpec
 from autosynth.llm import LLMRequest
 from autosynth.safety import SafetyFilter
@@ -147,10 +147,15 @@ def step(
     cfg: RunConfig,
     harness: HarnessSpec,
     domain: DomainAdapter,
-    grounding: GroundingItem,
+    grounding: GroundingItem | None,
     safety_filter: SafetyFilter | None = None,
+    policy: AcceptancePolicy | None = None,
 ) -> StepResult:
-    """Pure state transition. See module docstring."""
+    """Pure state transition. See module docstring.
+
+    ``policy`` defaults to a rubric-gap :class:`ThresholdPolicy`; the dispatcher
+    passes the policy resolved from ``cfg.acceptance.mode`` + domain.
+    """
     if item.state in TERMINAL_STATES:
         return StepResult(state=item)
 
@@ -158,15 +163,16 @@ def step(
     relevant = [r for r in new_responses if r.round_n == item.current_round]
 
     h = harness or DEFAULT_HARNESS
+    pol = policy or ThresholdPolicy(cfg.acceptance)
 
     if item.state == State.PENDING:
         return _emit_challenger(item, cfg, h, domain, grounding)
     if item.state == State.NEED_CANDIDATE:
-        return _on_challenger(item, relevant, cfg, h, domain, grounding, safety_filter)
+        return _on_challenger(item, relevant, cfg, h, domain, grounding, safety_filter, pol)
     if item.state == State.NEED_QUALITY:
-        return _on_quality(item, relevant, cfg, h, domain, grounding)
+        return _on_quality(item, relevant, cfg, h, domain, grounding, pol)
     if item.state == State.NEED_SCORES:
-        return _on_scores(item, relevant, cfg, h, domain, grounding)
+        return _on_scores(item, relevant, cfg, h, domain, grounding, pol)
     if item.state == State.NEED_REFLECTION:
         return _on_reflection(item, relevant, cfg, h, domain, grounding)
     raise ValueError(f"unknown state {item.state!r}")
@@ -187,7 +193,7 @@ def _emit_challenger(item, cfg, harness, domain, grounding) -> StepResult:
     return StepResult(state=new_state, new_requests=(req,))
 
 
-def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filter) -> StepResult:
+def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filter, policy) -> StepResult:
     resp = _find_role(relevant, "challenger")
     if resp is None:
         return StepResult(state=item)
@@ -208,6 +214,7 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
             harness,
             domain,
             grounding,
+            policy,
             failure_quality=QualityCheck(passed=False, failures=[f"challenger_parse_error:{e}"]),
         )
 
@@ -219,6 +226,7 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
             harness,
             domain,
             grounding,
+            policy,
             failure_quality=QualityCheck(
                 passed=False,
                 failures=struct_errs,
@@ -235,6 +243,7 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
                 harness,
                 domain,
                 grounding,
+                policy,
                 failure_quality=QualityCheck(
                     passed=False,
                     failures=[f"safety:{r}" for r in verdict.reasons],
@@ -254,7 +263,7 @@ def _on_challenger(item, relevant, cfg, harness, domain, grounding, safety_filte
     return StepResult(state=new_state, new_requests=(qreq,))
 
 
-def _on_quality(item, relevant, cfg, harness, domain, grounding) -> StepResult:
+def _on_quality(item, relevant, cfg, harness, domain, grounding, policy) -> StepResult:
     resp = _find_role(relevant, "quality")
     if resp is None:
         return StepResult(state=item)
@@ -267,6 +276,7 @@ def _on_quality(item, relevant, cfg, harness, domain, grounding) -> StepResult:
             harness,
             domain,
             grounding,
+            policy,
             failure_quality=quality,
         )
 
@@ -297,15 +307,18 @@ def _build_solver_requests(item, cfg, harness, domain):
             )
 
 
-def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
-    """Two kinds of responses come through here:
+def _on_scores(item, relevant, cfg, harness, domain, grounding, policy) -> StepResult:
+    """Score new solver attempts; finalize once all 2N are in.
 
-    - solver response → emit a judge request (no state change)
-    - judge response  → record a SolverScore (no state change *unless*
-                        all 2N scores are in, in which case we evaluate)
+    Rubric mode (``policy.requires_judge``) emits a judge request per solver
+    response and turns judge responses into scores. Verifiable mode scores each
+    solver response in-process via ``domain.verify()``. State only advances when
+    every weak and strong attempt has a score.
     """
-    judge_requests = _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain)
-    scores = _ingest_judge_responses(item, relevant)
+    if policy.requires_judge:
+        new_requests, scores = _score_via_judge(item, relevant, cfg, harness, domain)
+    else:
+        new_requests, scores = _score_via_verify(item, relevant, domain)
 
     have_all_scores = (
         len(scores.weak_scores) >= cfg.loop.weak_samples
@@ -320,7 +333,7 @@ def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
         )
         return StepResult(
             state=new_state,
-            new_requests=tuple(judge_requests),
+            new_requests=tuple(new_requests),
             scores_to_persist=scores.records,
         )
 
@@ -330,7 +343,65 @@ def _on_scores(item, relevant, cfg, harness, domain, grounding) -> StepResult:
         harness,
         domain,
         scores=scores,
-        judge_requests=judge_requests,
+        judge_requests=new_requests,
+        policy=policy,
+    )
+
+
+def _score_via_judge(item, relevant, cfg, harness, domain):
+    """Rubric mode: emit a judge per new solver response and ingest judge scores."""
+    judge_requests = _emit_judges_for_new_solvers(item, relevant, cfg, harness, domain)
+    scores = _ingest_judge_responses(item, relevant)
+    return judge_requests, scores
+
+
+def _score_via_verify(item, relevant, domain):
+    """Verifiable mode: score each new solver response via ``domain.verify()``.
+
+    No judge is dispatched; the SolverScore is binary and the ScoreRecord
+    self-references the solver response (there is no judge row). Re-delivered
+    attempts are deduped by (solver, attempt) so resume can't double-count.
+    """
+    new_weak = list(item.weak_scores)
+    new_strong = list(item.strong_scores)
+    seen = {(s.solver, s.attempt) for s in (*new_weak, *new_strong)}
+    records: list[ScoreRecord] = []
+    for r in relevant:
+        if r.role not in ("weak", "strong") or item.candidate is None:
+            continue
+        if (r.role, r.attempt) in seen:
+            continue
+        seen.add((r.role, r.attempt))
+        score = _verify_score(domain, item.candidate, r)
+        (new_weak if r.role == "weak" else new_strong).append(score)
+        records.append(
+            ScoreRecord(score=score, solver_response_id=r.request_id, judge_response_id=r.request_id)
+        )
+    scores = ScoreIngestion(
+        weak_scores=tuple(new_weak),
+        strong_scores=tuple(new_strong),
+        records=tuple(records),
+        judge_response_for_solver=item.judge_response_for_solver,
+    )
+    return [], scores
+
+
+def _verify_score(domain, candidate, resp) -> SolverScore:
+    """Binary SolverScore from a domain verdict. ``total`` is 1.0/0.0; ``correct``
+    is the verdict (None when unverifiable). Exceptions are swallowed here — never
+    raised into the dispatcher — so a faulty verify() can't livelock an item."""
+    common = dict(solver=resp.role, attempt=resp.attempt, raw_response=resp.text)
+    try:
+        correct = domain.verify(candidate, resp.text)
+    except Exception as e:
+        return SolverScore(**common, total=0.0, correct=None, failure_modes=[f"verify_error:{e}"])
+    if correct is None:
+        return SolverScore(**common, total=0.0, correct=None, failure_modes=["unverifiable"])
+    return SolverScore(
+        **common,
+        total=1.0 if correct else 0.0,
+        correct=correct,
+        failure_modes=[] if correct else ["incorrect"],
     )
 
 
@@ -398,8 +469,9 @@ def _finalize_scored_round(
     *,
     scores: ScoreIngestion,
     judge_requests,
+    policy,
 ) -> StepResult:
-    evaluation = evaluate(scores.weak_scores, scores.strong_scores, item.quality, cfg.acceptance)
+    evaluation = policy.evaluate(scores.weak_scores, scores.strong_scores, item.quality)
     round_obj = Round(
         refinement_round=item.current_round,
         candidate=item.candidate,
@@ -432,7 +504,8 @@ def _finalize_scored_round(
             prior_rounds=list(rounds_history),
             domain_name=domain.name,
             leakage_rules=domain.leakage_rules(),
-            acceptance=cfg.acceptance,
+            weak_ceiling=policy.weak_ceiling,
+            strong_floor=policy.strong_floor,
             harness=harness,
         )
         new_state = replace(item, state=State.NEED_REFLECTION, **common)
@@ -491,6 +564,7 @@ def _go_to_reflection_or_reject(
     harness,
     domain,
     grounding,
+    policy,
     *,
     failure_quality: QualityCheck,
 ) -> StepResult:
@@ -520,7 +594,8 @@ def _go_to_reflection_or_reject(
             prior_rounds=list(rounds_history),
             domain_name=domain.name,
             leakage_rules=domain.leakage_rules(),
-            acceptance=cfg.acceptance,
+            weak_ceiling=policy.weak_ceiling,
+            strong_floor=policy.strong_floor,
             harness=harness,
         )
         new_state = replace(

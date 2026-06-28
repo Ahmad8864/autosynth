@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -50,9 +50,23 @@ class ModelConfig(BaseModel):
 
 
 class AcceptanceConfig(BaseModel):
-    """Defaults mirror Agentic Self-Instruct (paper §3): weak ≤ 0.65,
-    weak_max ≤ 0.75, no weak-zero, strong ≥ 0.60, strong < 0.95, gap ≥ 0.20.
+    """Acceptance thresholds for both regimes the paper uses.
+
+    ``mode`` selects the regime:
+
+    - ``"rubric"`` (paper §3.1/3.2): an LLM judge scores each rollout against
+      a weighted rubric; the ``weak_*``/``strong_*``/``min_gap`` thresholds
+      below apply. Defaults mirror the CS main-agent criteria (Fig 7): weak
+      ≤ 0.65, weak_max ≤ 0.75, no weak-zero, strong ∈ [0.60, 0.95), gap ≥ 0.20.
+    - ``"verifiable"`` (paper §3.3): each rollout is scored by the domain's
+      programmatic ``verify()``; acceptance is a count gate ("weak must fail,
+      strong must succeed") via the ``verifiable_*`` knobs, which default to the
+      paper's 4-rollout setting (weak ≤ 1 correct, strong ≥ 3).
+
+    ``None`` defers to the domain's ``default_acceptance_mode``.
     """
+
+    mode: Literal["rubric", "verifiable"] | None = None
 
     weak_avg_max: float = 0.65
     weak_max_max: float = 0.75
@@ -62,6 +76,9 @@ class AcceptanceConfig(BaseModel):
     min_gap: float = 0.20
     require_quality_passed: bool = True
     rubric_max_weight: int = 7  # paper-recommended cap
+
+    verifiable_weak_max_correct: int = 1
+    verifiable_strong_min_correct: int = 3
 
 
 class LoopConfig(BaseModel):

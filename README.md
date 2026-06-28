@@ -68,14 +68,26 @@ For each source item, autosynth runs the same five-step loop until the candidate
 4. **Judge** scores every attempt against the rubric.
 5. **Evaluator** decides accept / reject. If reject, **reflector** writes feedback for the next round.
 
-The acceptance defaults come from §3 of the paper:
+### Acceptance modes
+
+The default is **rubric** mode: the judge scores each attempt against the rubric and acceptance is a threshold-and-gap test. Defaults:
 
 - weak average ≤ 0.65, weak max ≤ 0.75
 - strong average in [0.60, 0.95)
 - strong − weak gap ≥ 0.20
 - quality must have passed
 
-All of these are overridable in `acceptance:` in your config.
+For tasks with a checkable answer (math, code, exact extraction), use **verifiable** mode: the domain implements `verify(candidate, response) -> bool | None`, the judge is skipped, and acceptance is a count gate — *weak must fail, strong must succeed*. Defaults are calibrated for 4 rollouts: accept when the weak solver gets ≤ 1 of 4 correct and the strong ≥ 3 of 4.
+
+```yaml
+loop:        { weak_samples: 4, strong_samples: 4 }
+acceptance:
+  mode: verifiable          # or omit to use the domain's default_acceptance_mode
+  verifiable_weak_max_correct: 1
+  verifiable_strong_min_correct: 3
+```
+
+The bundled `math_word_problems` domain ships in verifiable mode (exact-fraction answer checking).
 
 ## Architecture
 
@@ -126,7 +138,7 @@ A domain plugin is one class subclassing `DomainAdapter` with six methods. Scaff
 uv run autosynth init-domain customer_support -o my_domain.py
 ```
 
-Fill in `load_grounding`, `generation_prompt`, `validate_candidate`, `solver_prompt`, `quality_prompt`, and `judge_prompt`, then point your config at it:
+Fill in `load_grounding`, `generation_prompt`, `validate_candidate`, `solver_prompt`, `quality_prompt`, and `judge_prompt`, then point your config at it. For a checkable-answer domain, also override `verify()` and set `default_acceptance_mode = "verifiable"` (see `math_word_problems.py`) — the judge prompt is then unused.
 
 ```yaml
 domain:

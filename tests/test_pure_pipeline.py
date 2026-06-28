@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from autosynth.acceptance import VerifiablePolicy
 from autosynth.config import (
     AcceptanceConfig,
     DomainConfig,
@@ -20,7 +21,7 @@ from autosynth.config import (
     ModelConfig,
     RunConfig,
 )
-from autosynth.domain import GroundingItem
+from autosynth.domain import DomainAdapter, GroundingItem
 from autosynth.domains.qa_from_documents import QAFromDocuments
 from autosynth.harness import DEFAULT_HARNESS
 from autosynth.pipeline import (
@@ -30,6 +31,7 @@ from autosynth.pipeline import (
     step,
 )
 from autosynth.safety import SafetyVerdict
+from autosynth.schemas import SolverScore
 from autosynth.utils import stable_id
 
 # ---------------------------------------------------------------------------
@@ -381,7 +383,7 @@ def test_need_scores_completes_and_accepts(domain, grounding):
         grounding=grounding,
     )
     assert res.state.state == State.ACCEPTED
-    assert res.completed_round is not None
+    assert res.completed_round is not None and res.completed_round.evaluation is not None
     assert res.completed_round.evaluation.accepted is True
     assert len(res.scores_to_persist) == 4
 
@@ -408,7 +410,7 @@ def test_need_scores_rejects_and_reflects(domain, grounding):
         grounding=grounding,
     )
     assert res.state.state == State.NEED_REFLECTION
-    assert res.completed_round is not None
+    assert res.completed_round is not None and res.completed_round.evaluation is not None
     assert res.completed_round.evaluation.accepted is False
     assert any(r.role == "reflector" for r in res.new_requests)
 
@@ -531,3 +533,148 @@ def _pass_quality():
     from autosynth.schemas import QualityCheck
 
     return QualityCheck(passed=True, failures=[], notes="ok")
+
+
+# ---------------------------------------------------------------------------
+# Verifiable mode — in-process scoring via domain.verify() (no judge)
+# ---------------------------------------------------------------------------
+
+
+class _VerifyDomain(DomainAdapter):
+    """Minimal verifiable domain: an attempt is correct iff it contains 'CORRECT'."""
+
+    name = "verify_test"
+    default_acceptance_mode = "verifiable"
+
+    def load_grounding(self):
+        raise NotImplementedError
+
+    def generation_prompt(self, item, feedback, round_n, prior_payloads):
+        raise NotImplementedError
+
+    def validate_candidate(self, candidate):
+        return []
+
+    def solver_prompt(self, candidate, solver_role):
+        raise NotImplementedError
+
+    def quality_prompt(self, candidate):
+        raise NotImplementedError
+
+    def judge_prompt(self, candidate, solver_response, solver_role):
+        raise NotImplementedError
+
+    def verify(self, candidate, solver_response):
+        if "RAISE" in solver_response:
+            raise RuntimeError("boom")
+        if "SKIP" in solver_response:
+            return None
+        return "CORRECT" in solver_response
+
+
+def _verify_policy(*, weak_max=0, strong_min=2):
+    return VerifiablePolicy(
+        AcceptanceConfig(verifiable_weak_max_correct=weak_max, verifiable_strong_min_correct=strong_min),
+        weak_samples=2,
+        strong_samples=2,
+    )
+
+
+def _solver_text(role: str, attempt: int, text: str, *, round_n: int = 1) -> StepResponse:
+    return StepResponse(
+        request_id=stable_id("i1", round_n, role, attempt),
+        role=role,
+        round_n=round_n,
+        attempt=attempt,
+        text=text,
+    )
+
+
+def _verify_step(item, responses, **kw):
+    return step(
+        item,
+        responses,
+        cfg=_cfg(weak=2, strong=2, **kw),
+        harness=DEFAULT_HARNESS,
+        domain=_VerifyDomain(),
+        grounding=None,
+        policy=_verify_policy(),
+    )
+
+
+def _scored_item(grounding, **overrides):
+    return _seed_item(
+        grounding,
+        state=State.NEED_SCORES,
+        candidate=_make_candidate(grounding.source_id),
+        quality=_pass_quality(),
+        **overrides,
+    )
+
+
+def test_verified_scores_solvers_without_judge(grounding):
+    res = _verify_step(
+        _scored_item(grounding), [_solver_text("weak", 0, "wrong"), _solver_text("strong", 0, "CORRECT")]
+    )
+    assert res.state.state == State.NEED_SCORES  # not all 4 in
+    assert res.new_requests == ()  # no judge requests in verifiable mode
+    assert len(res.state.weak_scores) == 1 and len(res.state.strong_scores) == 1
+    assert res.state.weak_scores[0].correct is False and res.state.weak_scores[0].total == 0.0
+    assert res.state.strong_scores[0].correct is True and res.state.strong_scores[0].total == 1.0
+    assert len(res.scores_to_persist) == 2
+
+
+def test_verified_completes_and_accepts(grounding):
+    res = _verify_step(
+        _scored_item(grounding),
+        [
+            _solver_text("weak", 0, "wrong"),
+            _solver_text("weak", 1, "wrong"),
+            _solver_text("strong", 0, "CORRECT"),
+            _solver_text("strong", 1, "CORRECT"),
+        ],
+    )
+    assert res.state.state == State.ACCEPTED
+    assert res.completed_round is not None and res.completed_round.evaluation is not None
+    assert res.completed_round.evaluation.accepted is True
+    assert len(res.scores_to_persist) == 4
+
+
+def test_verified_rejects_and_reflects(grounding):
+    res = _verify_step(
+        _scored_item(grounding),
+        [
+            _solver_text("weak", 0, "wrong"),
+            _solver_text("weak", 1, "wrong"),
+            _solver_text("strong", 0, "CORRECT"),
+            _solver_text("strong", 1, "wrong"),  # only 1/2 strong correct < 2
+        ],
+        max_rounds=3,
+    )
+    assert res.state.state == State.NEED_REFLECTION
+    assert res.completed_round is not None and res.completed_round.evaluation is not None
+    assert res.completed_round.evaluation.accepted is False
+    assert any(r.role == "reflector" for r in res.new_requests)
+
+
+def test_verified_verify_exception_counts_incorrect(grounding):
+    """A verify() that raises is swallowed inside step() (no livelock); attempt counts wrong."""
+    res = _verify_step(
+        _scored_item(grounding),
+        [_solver_text(role, a, "RAISE") for role in ("weak", "strong") for a in (0, 1)],
+        max_rounds=1,
+    )
+    assert res.state.state == State.REJECTED  # all incorrect -> strong gate fails -> terminal at max_rounds=1
+    scores = res.state.weak_scores + res.state.strong_scores
+    assert all(s.total == 0.0 and s.correct is None for s in scores)
+    assert all(any("verify_error" in f for f in s.failure_modes) for s in scores)
+
+
+def test_verified_dedups_redelivered_solver(grounding):
+    prior = (SolverScore(solver="weak", attempt=0, raw_response="x", total=0.0, correct=False),)
+    res = _verify_step(
+        _scored_item(grounding, weak_scores=prior),
+        [_solver_text("weak", 0, "wrong"), _solver_text("weak", 1, "wrong")],  # attempt 0 re-delivered
+    )
+    assert len(res.state.weak_scores) == 2  # attempt 0 not double-counted
+    assert len(res.scores_to_persist) == 1  # only the genuinely new attempt

@@ -7,7 +7,6 @@ import json
 import pytest
 
 from autosynth.agents import challenger, reflector, solver, verifier
-from autosynth.config import AcceptanceConfig
 from autosynth.domains.qa_from_documents import QAFromDocuments
 from autosynth.harness import make_harness
 from autosynth.schemas import (
@@ -241,7 +240,8 @@ def test_reflector_build_request_summarizes_priors(candidate):
         prior_rounds=rounds,
         domain_name="qa",
         leakage_rules=["x"],
-        acceptance=AcceptanceConfig(),
+        weak_ceiling=0.65,
+        strong_floor=0.60,
     )
     all_text = " ".join(m["content"] for m in req.messages)
     assert "TOO_EASY" in all_text

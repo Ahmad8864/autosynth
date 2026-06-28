@@ -5,6 +5,12 @@ try:
 except ImportError:
     __version__ = "0.0.0+unknown"
 
+from autosynth.acceptance import (
+    AcceptancePolicy,
+    ThresholdPolicy,
+    VerifiablePolicy,
+    resolve_policy,
+)
 from autosynth.config import (
     AcceptanceConfig,
     DomainConfig,
@@ -15,6 +21,7 @@ from autosynth.config import (
     SafetyConfig,
     load_config,
 )
+from autosynth.dispatcher import RunSummary
 from autosynth.domain import (
     DomainAdapter,
     GroundingItem,
@@ -24,6 +31,7 @@ from autosynth.domain import (
 )
 from autosynth.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness, make_harness
 from autosynth.llm import LLMClient, LLMConfig, LLMRequest, RateLimitSpec, Response, register_mock
+from autosynth.runner import Runner
 from autosynth.schemas import (
     Candidate,
     EvalReport,
@@ -59,6 +67,14 @@ __all__ = [
     "RunConfig",
     "SafetyConfig",
     "load_config",
+    # Acceptance policies
+    "AcceptancePolicy",
+    "ThresholdPolicy",
+    "VerifiablePolicy",
+    "resolve_policy",
+    # Run driver
+    "Runner",
+    "RunSummary",
     # Harness / meta-opt
     "HarnessSpec",
     "DEFAULT_HARNESS",

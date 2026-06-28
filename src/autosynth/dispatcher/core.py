@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
+from autosynth.acceptance import resolve_policy
 from autosynth.config import RunConfig
 from autosynth.dispatcher.hydration import (
     accepted_extras,
@@ -85,6 +86,7 @@ class Dispatcher:
         self.run_id = run_id
         self.harness = harness or DEFAULT_HARNESS
         self.grounding = grounding or {}
+        self.policy = resolve_policy(cfg, domain)
         self.fulfill = fulfill
         self.poll_in_flight = poll_in_flight
         self.safety_filter: SafetyFilter | None = (
@@ -200,6 +202,7 @@ class Dispatcher:
                 domain=self.domain,
                 grounding=grounding,
                 safety_filter=self.safety_filter,
+                policy=self.policy,
             )
         except Exception:
             logger.exception("pipeline step crashed for item {}", item_state.item_id)

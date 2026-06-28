@@ -13,7 +13,6 @@ from typing import Any
 
 from loguru import logger
 
-from autosynth.config import AcceptanceConfig
 from autosynth.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness
 from autosynth.llm import LLMRequest
 from autosynth.schemas import Round
@@ -26,7 +25,9 @@ class ReflectionResult:
     new_angle: str
 
 
-def _summarize_prior_rounds(rounds: list[Round], acceptance: AcceptanceConfig) -> dict[str, list[dict]]:
+def _summarize_prior_rounds(
+    rounds: list[Round], weak_ceiling: float, strong_floor: float
+) -> dict[str, list[dict]]:
     too_easy: list[dict] = []
     failed_strong: list[dict] = []
     failed_quality: list[dict] = []
@@ -41,9 +42,9 @@ def _summarize_prior_rounds(rounds: list[Round], acceptance: AcceptanceConfig) -
         ev = r.evaluation
         if ev is None:
             continue
-        if ev.weak_avg > acceptance.weak_avg_max:
+        if ev.weak_avg > weak_ceiling:
             too_easy.append({**short, "weak_avg": ev.weak_avg})
-        if ev.strong_avg < acceptance.strong_avg_min:
+        if ev.strong_avg < strong_floor:
             failed_strong.append({**short, "strong_avg": ev.strong_avg, "gap": ev.gap})
     return {"too_easy": too_easy, "failed_strong": failed_strong, "failed_quality": failed_quality}
 
@@ -58,12 +59,17 @@ def build_request(
     prior_rounds: list[Round],
     domain_name: str,
     leakage_rules: list[str],
-    acceptance: AcceptanceConfig | None = None,
+    weak_ceiling: float,
+    strong_floor: float,
     harness: HarnessSpec | None = None,
 ) -> LLMRequest:
-    """Build the reflector request for an item entering round_n (round_n >= 2)."""
+    """Build the reflector request for an item entering round_n (round_n >= 2).
+
+    ``weak_ceiling`` / ``strong_floor`` come from the active acceptance policy
+    and bucket prior rounds into too-easy / failed-strong feedback.
+    """
     h = harness or DEFAULT_HARNESS
-    summary = _summarize_prior_rounds(prior_rounds, acceptance or AcceptanceConfig())
+    summary = _summarize_prior_rounds(prior_rounds, weak_ceiling, strong_floor)
     messages = [
         {
             "role": "system",

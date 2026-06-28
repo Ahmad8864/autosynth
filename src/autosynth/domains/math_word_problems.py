@@ -7,12 +7,29 @@ demonstrating that the framework is not document-bound.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
+from fractions import Fraction
 from typing import Any
 
 from autosynth.domain import DomainAdapter, GroundingItem, bullet_list, register_domain
 from autosynth.schemas import Candidate
 from autosynth.utils import stable_id
+
+_ANSWER_RE = re.compile(r"ANSWER:\s*(.+)", re.IGNORECASE)
+_NUMBER_RE = re.compile(r"-?\d+/\d+|-?\d+\.?\d*")
+
+
+def _parse_number(text: str) -> Fraction | None:
+    """First number in ``text`` as an exact Fraction, or None. '0.5' == '1/2'."""
+    m = _NUMBER_RE.search(text.replace(",", ""))
+    if m is None:
+        return None
+    try:
+        return Fraction(m.group().rstrip("."))
+    except (ValueError, ZeroDivisionError):
+        return None
+
 
 _DEFAULT_TOPICS = [
     {"topic": "linear systems", "difficulty": "high-school"},
@@ -26,6 +43,7 @@ _DEFAULT_TOPICS = [
 @register_domain("math_word_problems")
 class MathWordProblems(DomainAdapter):
     description = "Generate math word problems with verifiable numeric answers."
+    default_acceptance_mode = "verifiable"
 
     def __init__(self, topics: list[dict[str, Any]] | None = None, **kw: Any):
         super().__init__(topics=topics, **kw)
@@ -114,3 +132,13 @@ class MathWordProblems(DomainAdapter):
             f"SOLVER_RESPONSE: {solver_response}\n"
         )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
+
+    def verify(self, candidate: Candidate, solver_response: str) -> bool | None:
+        ref = _parse_number(candidate.reference_output or "")
+        m = _ANSWER_RE.findall(solver_response)
+        if not m:
+            return None
+        got = _parse_number(m[-1])
+        if ref is None or got is None:
+            return None
+        return got == ref

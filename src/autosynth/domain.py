@@ -57,6 +57,7 @@ class DomainAdapter(ABC):
 
     name: str = "unnamed"
     description: str = ""
+    default_acceptance_mode: str = "rubric"  # or "verifiable"
 
     def __init__(self, **params: Any):
         self.params = params
@@ -123,6 +124,15 @@ class DomainAdapter(ABC):
     def leakage_rules(self) -> list[str]:
         """Optional: domain-specific leakage rules surfaced to the verifier."""
         return []
+
+    def verify(self, candidate: Candidate, solver_response: str) -> bool | None:
+        """Programmatic correctness check for verifiable acceptance (mode="verifiable").
+
+        Return True/False, or None when the response can't be verified (counted
+        as incorrect). MUST be pure and deterministic — no network, subprocess,
+        clock, or randomness; it runs inside the pure pipeline ``step()``.
+        """
+        return None
 
 
 # ---------------------------------------------------------------------------

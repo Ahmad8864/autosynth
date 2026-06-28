@@ -49,7 +49,13 @@ class QualityCheck(BaseModel):
 
 
 class SolverScore(BaseModel):
-    """Score for a single solver invocation, judged against the rubric."""
+    """Score for a single solver invocation.
+
+    In rubric mode ``total`` is the weighted-rubric score in [0, 1] and
+    ``correct`` is ``None``. In verifiable mode ``total`` is binary (1.0 /
+    0.0) and ``correct`` records the programmatic verdict: ``True``/``False``,
+    or ``None`` when the response could not be verified (counted as incorrect).
+    """
 
     solver: str  # "weak" | "strong"
     attempt: int
@@ -57,6 +63,7 @@ class SolverScore(BaseModel):
     total: float = Field(ge=0.0, le=1.0)
     per_criterion: dict[str, float] = Field(default_factory=dict)
     failure_modes: list[str] = Field(default_factory=list)
+    correct: bool | None = None
 
 
 class EvalReport(BaseModel):
