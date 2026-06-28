@@ -80,3 +80,8 @@ ignore = [
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.basedpyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
