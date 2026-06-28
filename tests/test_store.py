@@ -104,6 +104,7 @@ def test_unsupported_version_raises(tmp_path: Path):
 
 def test_create_and_get_run(store: Store):
     row = store.get_run("r1")
+    assert row is not None
     assert row["status"] == RUN_STATUS_RUNNING
     assert row["cost_usd_cap"] == 10.0
     assert json.loads(row["config_blob"]) == {"foo": "bar"}
@@ -112,6 +113,7 @@ def test_create_and_get_run(store: Store):
 def test_run_status_transition(store: Store):
     store.update_run_status("r1", RUN_STATUS_COMPLETED)
     row = store.get_run("r1")
+    assert row is not None
     assert row["status"] == RUN_STATUS_COMPLETED
     assert row["finished_at"] is not None
 
@@ -126,6 +128,7 @@ def test_update_item_state_and_round(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="PENDING")
     store.update_item(iid, state="NEED_CANDIDATE", current_round=2)
     row = store.get_item(iid)
+    assert row is not None
     assert row["state"] == "NEED_CANDIDATE"
     assert row["current_round"] == 2
 
@@ -136,6 +139,7 @@ def test_update_item_rejection_reasons(store: Store):
         iid, state="REJECTED", final_round=3, rejection_reasons=["exhausted_rounds", "gap_too_small"]
     )
     row = store.get_item(iid)
+    assert row is not None
     assert json.loads(row["rejection_reasons"]) == ["exhausted_rounds", "gap_too_small"]
     assert row["final_round"] == 3
 
@@ -145,18 +149,21 @@ def test_round_materialization_lifecycle(store: Store):
     # 1. insert with candidate only
     store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
     row = store.get_round(iid, 1)
+    assert row is not None
     assert row["candidate_blob"] is not None
     assert row["quality_blob"] is None
     assert row["accepted"] == 0
     # 2. attach quality
     store.upsert_round(item_id=iid, round_n=1, quality=QualityCheck(passed=True))
     row = store.get_round(iid, 1)
+    assert row is not None
     assert json.loads(row["quality_blob"])["passed"] is True
     assert row["candidate_blob"] is not None  # not overwritten
     # 3. attach eval + finalize accepted
     store.upsert_round(item_id=iid, round_n=1, evaluation=EvalReport(accepted=True, gap=0.5))
     store.finalize_round(iid, 1, accepted=True)
     row = store.get_round(iid, 1)
+    assert row is not None
     assert row["accepted"] == 1
     assert row["ended_at"] is not None
     assert json.loads(row["eval_blob"])["accepted"] is True
@@ -230,6 +237,7 @@ def test_insert_response_marks_request_done_and_charges_cost(store: Store):
     store.claim_pending(1)
     store.insert_response(request_id="q1", model="gpt-x", text="ok", cost_usd=0.03)
     req = store.get_request("q1")
+    assert req is not None
     assert req.status == REQ_DONE
     resp = store.get_response("q1")
     assert resp is not None
@@ -242,7 +250,8 @@ def test_insert_response_idempotent(store: Store):
     store.insert_requests([_request(iid, request_id="q1")])
     store.insert_response(request_id="q1", model="m", text="t", cost_usd=0.01)
     store.insert_response(request_id="q1", model="m", text="t-again", cost_usd=0.99)  # ignored
-    assert store.get_response("q1").text == "t"
+    resp = store.get_response("q1")
+    assert resp is not None and resp.text == "t"
     assert store.cost_so_far("r1") == pytest.approx(0.01)
 
 
@@ -252,6 +261,7 @@ def test_responses_since(store: Store):
     for i in range(3):
         store.insert_response(request_id=f"q{i}", model="m", text=f"r{i}")
     item = store.get_item(iid)
+    assert item is not None
     new = store.responses_since(iid, item["updated_at"])
     assert {r.request_id for r in new} == {"q0", "q1", "q2"}
     # ordered deterministically by request_id
@@ -389,7 +399,8 @@ def test_resume_in_flight_local_to_pending(store: Store):
     store.claim_pending(1)  # local: batch_id stays NULL
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["in_flight_to_pending"] == 1
-    assert store.get_request("q1").status == REQ_PENDING
+    req = store.get_request("q1")
+    assert req is not None and req.status == REQ_PENDING
 
 
 def test_resume_in_flight_batch_unchanged(store: Store):
@@ -398,8 +409,10 @@ def test_resume_in_flight_batch_unchanged(store: Store):
     store.claim_pending(1, batch_id="batch-xyz")
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["in_flight_to_pending"] == 0
-    assert store.get_request("q1").status == REQ_IN_FLIGHT
-    assert store.get_request("q1").batch_id == "batch-xyz"
+    req = store.get_request("q1")
+    assert req is not None
+    assert req.status == REQ_IN_FLIGHT
+    assert req.batch_id == "batch-xyz"
 
 
 def test_resume_done_without_response_reverts_to_pending(store: Store):
@@ -410,7 +423,8 @@ def test_resume_done_without_response_reverts_to_pending(store: Store):
         cur.execute("UPDATE requests SET status=? WHERE request_id='q1'", (REQ_DONE,))
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["done_to_pending"] == 1
-    assert store.get_request("q1").status == REQ_PENDING
+    req = store.get_request("q1")
+    assert req is not None and req.status == REQ_PENDING
 
 
 def test_resume_failed_under_cap_reverts_to_pending(store: Store):
@@ -428,7 +442,8 @@ def test_resume_failed_under_cap_reverts_to_pending(store: Store):
         )
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["failed_to_pending"] == 1
-    assert store.get_request("q1").status == REQ_PENDING
+    req = store.get_request("q1")
+    assert req is not None and req.status == REQ_PENDING
 
 
 def test_resume_failed_at_cap_stays_failed(store: Store):
@@ -439,6 +454,8 @@ def test_resume_failed_at_cap_stays_failed(store: Store):
         store.mark_request_failed("q1", "err", max_failures=3)
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["failed_to_pending"] == 0
-    assert store.get_request("q1").failure_count == 3
-    assert store.get_request("q1").status == REQ_FAILED
+    req = store.get_request("q1")
+    assert req is not None
+    assert req.failure_count == 3
+    assert req.status == REQ_FAILED
     assert (iid, "err") in store.unrecoverable_items("r1", max_request_failures=3)

@@ -55,4 +55,5 @@ def test_trajectory_accepted_round_lookup():
         )
     )
     t.final_accepted_round = 2
-    assert t.accepted_round().refinement_round == 2
+    accepted = t.accepted_round()
+    assert accepted is not None and accepted.refinement_round == 2

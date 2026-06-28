@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -91,12 +91,12 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, default=str))
 
 
-def write_pydantic(path: Path, obj: BaseModel | list[BaseModel]) -> None:
+def write_pydantic(path: Path, obj: BaseModel | Sequence[BaseModel]) -> None:
     """Serialize a Pydantic model (or list of models) to JSON on disk."""
-    if isinstance(obj, list):
-        data = [m.model_dump(mode="json") for m in obj]
-    else:
+    if isinstance(obj, BaseModel):
         data = obj.model_dump(mode="json")
+    else:
+        data = [m.model_dump(mode="json") for m in obj]
     write_json(path, data)
 
 

@@ -66,12 +66,14 @@ def cfg(docs_dir, tmp_path) -> RunConfig:
 
 
 def _seed_run(store: Store, cfg: RunConfig, docs_dir: Path) -> tuple[Dispatcher, dict[str, GroundingItem]]:
+    run_id = cfg.run_id
+    assert run_id is not None
     domain = QAFromDocuments(source_dir=str(docs_dir))
-    store.create_run(cfg.run_id, config=cfg.model_dump(mode="json"))
+    store.create_run(run_id, config=cfg.model_dump(mode="json"))
     grounding: dict[str, GroundingItem] = {}
     for item in domain.load_grounding():
         store.insert_item(
-            run_id=cfg.run_id,
+            run_id=run_id,
             source_id=item.source_id,
             domain=domain.name,
             state=State.PENDING.value,
@@ -83,7 +85,7 @@ def _seed_run(store: Store, cfg: RunConfig, docs_dir: Path) -> tuple[Dispatcher,
         llm=LLMClient(),
         domain=domain,
         cfg=cfg,
-        run_id=cfg.run_id,
+        run_id=run_id,
         harness=DEFAULT_HARNESS,
         grounding=grounding,
     )
