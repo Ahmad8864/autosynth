@@ -45,11 +45,15 @@ class Store:
     """Thread-safe SQLite DAO for one run.
 
     A single connection is shared across threads with check_same_thread=False;
-    writes are serialized via an RLock. WAL mode lets readers proceed
-    concurrently with the single writer.
+    writes are serialized via an RLock. With one shared connection, reads are
+    serialized by SQLite's connection mutex (not WAL snapshot isolation).
     """
 
     def __init__(self, db_path: Path | str):
+        if sqlite3.sqlite_version_info < (3, 35):
+            raise RuntimeError(
+                f"SQLite >= 3.35 required (UPDATE ... RETURNING); have {sqlite3.sqlite_version}"
+            )
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30.0)
@@ -692,7 +696,7 @@ class Store:
 
         - in_flight w/o batch_id  → pending (local fulfill lost its work)
         - in_flight w/ batch_id   → leave (batch poll will fetch)
-        - done w/o response row   → pending (crash between insert_response and mark_done)
+        - done w/o response row   → pending (defensive; insert_response writes both atomically)
         - failed w/ count < cap   → pending (let it retry)
         - failed w/ count >= cap  → leave; item goes REJECTED("unrecoverable") elsewhere
         """

@@ -17,7 +17,7 @@ from autosynth.schemas import Candidate
 from autosynth.utils import stable_id
 
 _ANSWER_RE = re.compile(r"ANSWER:\s*(.+)", re.IGNORECASE)
-_NUMBER_RE = re.compile(r"-?\d+/\d+|-?\d+\.?\d*")
+_NUMBER_RE = re.compile(r"-?\d+/\d+|-?\d*\.\d+|-?\d+\.?\d*")
 
 
 def _parse_number(text: str) -> Fraction | None:

@@ -31,7 +31,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from autosynth.schemas import Candidate, RubricCriterion
 
@@ -57,7 +57,7 @@ class DomainAdapter(ABC):
 
     name: str = "unnamed"
     description: str = ""
-    default_acceptance_mode: str = "rubric"  # or "verifiable"
+    default_acceptance_mode: Literal["rubric", "verifiable", "judge"] = "rubric"
 
     def __init__(self, **params: Any):
         self.params = params
@@ -219,7 +219,7 @@ def bullet_list(
     if key is None:
         lines = [str(x) for x in items]
     else:
-        lines = [str(d.get(key, "") or "") for d in items]  # type: ignore[union-attr]
+        lines = [str((d.get(key, "") if isinstance(d, dict) else d) or "") for d in items]
     if limit > 0:
         lines = [s[:limit] for s in lines]
     return "\n".join(f"- {s}" for s in lines) or empty

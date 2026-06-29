@@ -95,9 +95,6 @@ class ItemState:
     last_feedback: tuple[str, ...] = ()
     source_metadata: dict[str, Any] = field(default_factory=dict)
     rejection_reasons: tuple[str, ...] = ()
-    # Map of solver request_id → judge response IDs we've already paired.
-    # Used by NEED_SCORES to find score_records when emitting score persistence.
-    judge_response_for_solver: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -113,7 +110,6 @@ class ScoreIngestion:
     weak_scores: tuple[SolverScore, ...]
     strong_scores: tuple[SolverScore, ...]
     records: tuple[ScoreRecord, ...]
-    judge_response_for_solver: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -320,7 +316,6 @@ def _on_quality(item: ItemState, relevant: list[StepResponse], ctx: StepContext)
         quality=quality,
         weak_scores=(),
         strong_scores=(),
-        judge_response_for_solver={},
     )
     return StepResult(state=new_state, new_requests=reqs)
 
@@ -378,7 +373,6 @@ def _on_scores(item: ItemState, relevant: list[StepResponse], ctx: StepContext) 
                 item,
                 weak_scores=scores.weak_scores,
                 strong_scores=scores.strong_scores,
-                judge_response_for_solver=scores.judge_response_for_solver,
             )
             return StepResult(
                 state=new_state,
@@ -401,7 +395,6 @@ def _on_scores(item: ItemState, relevant: list[StepResponse], ctx: StepContext) 
             item,
             weak_scores=scores.weak_scores,
             strong_scores=scores.strong_scores,
-            judge_response_for_solver=scores.judge_response_for_solver,
         )
         return StepResult(
             state=new_state,
@@ -427,7 +420,6 @@ def _on_scores(item: ItemState, relevant: list[StepResponse], ctx: StepContext) 
             state=State.NEED_DECISION,
             weak_scores=scores.weak_scores,
             strong_scores=scores.strong_scores,
-            judge_response_for_solver=scores.judge_response_for_solver,
         )
         return StepResult(
             state=new_state,
@@ -483,7 +475,6 @@ def _score_via_verify(
         weak_scores=tuple(new_weak),
         strong_scores=tuple(new_strong),
         records=tuple(records),
-        judge_response_for_solver=item.judge_response_for_solver,
     )
     return [], scores
 
@@ -538,7 +529,6 @@ def _ingest_judge_responses(item, relevant):
     new_strong = list(item.strong_scores)
     seen = {(s.solver, s.attempt) for s in (*new_weak, *new_strong)}
     new_scores: list[ScoreRecord] = []
-    judge_for_solver = dict(item.judge_response_for_solver)
 
     for r in relevant:
         if r.role != "judge" or item.candidate is None or r.solver_role is None:
@@ -555,7 +545,6 @@ def _ingest_judge_responses(item, relevant):
         )
         (new_weak if r.solver_role == "weak" else new_strong).append(score)
         if r.parent_response_id is not None:
-            judge_for_solver[r.parent_response_id] = r.request_id
             new_scores.append(
                 ScoreRecord(
                     score=score,
@@ -567,7 +556,6 @@ def _ingest_judge_responses(item, relevant):
         weak_scores=tuple(new_weak),
         strong_scores=tuple(new_strong),
         records=tuple(new_scores),
-        judge_response_for_solver=judge_for_solver,
     )
 
 
@@ -667,7 +655,6 @@ def _finalize_decision(
             weak_scores=(),
             strong_scores=(),
             last_feedback=decision.feedback,
-            judge_response_for_solver={},
             rounds_history=rounds_history,
         )
         result = _emit_challenger(bumped, ctx)
@@ -703,7 +690,6 @@ def _on_reflection(item: ItemState, relevant: list[StepResponse], ctx: StepConte
         weak_scores=(),
         strong_scores=(),
         last_feedback=tuple(feedback),
-        judge_response_for_solver={},
     )
     return _emit_challenger(bumped, ctx)
 

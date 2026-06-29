@@ -264,7 +264,7 @@ def resolve_policy(cfg: RunConfig, domain: DomainAdapter) -> AcceptancePolicy:
     ``default_acceptance_mode``. Verifiable mode requires the domain to
     implement ``verify()`` and a well-formed count gate.
     """
-    mode = cfg.acceptance.mode or getattr(domain, "default_acceptance_mode", "rubric")
+    mode = cfg.acceptance.mode or domain.default_acceptance_mode
     if mode == "rubric":
         return ThresholdPolicy(cfg.acceptance)
     if mode == "judge":
