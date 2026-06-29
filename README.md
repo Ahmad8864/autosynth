@@ -12,7 +12,7 @@ The headline trick: for each candidate datapoint, run a *weak* solver and a *str
 [paper]: https://doi.org/10.48550/arXiv.2606.25996
 [blog]: https://facebookresearch.github.io/RAM/blogs/autodata/
 
-> **Status:** alpha (0.1.0). The API is still moving. Pin a commit if you're depending on it.
+> **Status:** alpha (0.2.0). The API is still moving. Pin a commit if you're depending on it.
 
 ## Install
 

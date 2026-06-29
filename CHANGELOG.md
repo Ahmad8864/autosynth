@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.2.0] - 2026-06-29
+
+### Added
+
 - New `verifiable` acceptance mode for tasks with checkable answers (math, code, exact extraction): correctness is checked programmatically instead of by the LLM judge. Enable with `acceptance.mode: verifiable`.
 - The bundled `math_word_problems` domain now uses verifiable mode by default, checking answers for exact numeric equality.
 - New `judge` acceptance mode: an LLM decides accept/improve each round instead of fixed thresholds, for open-ended tasks where no threshold fits. Enable with `acceptance.mode: judge`.
@@ -54,6 +62,7 @@ Initial release.
 - LiteLLM-based real provider routing with per-role configuration.
 - CLI: `run`, `resume`, `status`, `inspect-run`, `export`, `metaopt`, `init-domain`.
 
-[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Ahmad8864/autosynth/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Ahmad8864/autosynth/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Ahmad8864/autosynth/releases/tag/v0.1.0
