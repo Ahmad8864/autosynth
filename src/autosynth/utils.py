@@ -34,10 +34,11 @@ def make_run_id(prefix: str, *seed_parts: Any) -> str:
 
 
 def extract_json(text: str) -> dict[str, Any]:
-    """Extract the first balanced JSON object or array from a string.
+    """Extract the first balanced JSON object from a string.
 
-    Robust to chatty preludes ("Here's the JSON: { ... }") and trailing prose.
-    Tries direct parse first, then progressively wider slices.
+    Robust to chatty preludes and trailing prose. Raises ValueError if no object
+    is found — a top-level array or scalar is rejected, not returned, so callers
+    keep the dict contract.
     """
     if not text:
         raise ValueError("empty response")
@@ -47,16 +48,14 @@ def extract_json(text: str) -> dict[str, Any]:
         text = _FENCE_CLOSE.sub("", text)
         text = text.strip()
     try:
-        return json.loads(text)
+        obj = json.loads(text)
     except json.JSONDecodeError:
         pass
+    else:
+        if isinstance(obj, dict):
+            return obj
 
-    starts = [i for i, c in enumerate(text) if c in "{["]
-    if not starts:
-        raise ValueError(f"no JSON object found in response: {text[:200]!r}")
-    for s in starts:
-        opener = text[s]
-        closer = "}" if opener == "{" else "]"
+    for s in (i for i, c in enumerate(text) if c == "{"):
         depth = 0
         in_str = False
         esc = False
@@ -73,17 +72,16 @@ def extract_json(text: str) -> dict[str, Any]:
                 continue
             if in_str:
                 continue
-            if c == opener:
+            if c == "{":
                 depth += 1
-            elif c == closer:
+            elif c == "}":
                 depth -= 1
                 if depth == 0:
-                    chunk = text[s : i + 1]
                     try:
-                        return json.loads(chunk)
+                        return json.loads(text[s : i + 1])
                     except json.JSONDecodeError:
-                        break
-    raise ValueError(f"failed to parse JSON from response: {text[:200]!r}")
+                        break  # unbalanced/invalid; try the next '{'
+    raise ValueError(f"no JSON object found in response: {text[:200]!r}")
 
 
 def write_json(path: Path, data: Any) -> None:

@@ -197,6 +197,55 @@ def test_need_candidate_parse_failure_at_max_rounds_goes_to_rejected(domain, gro
     assert res.state.rejection_reasons
 
 
+def test_need_candidate_non_object_json_goes_to_reflection(domain, grounding):
+    # Valid JSON but non-object (a top-level array) must reflect, not escape step().
+    item = _seed_item(grounding, state=State.NEED_CANDIDATE)
+    bad = StepResponse(
+        request_id=stable_id("i1", 1, "challenger", 0),
+        role="challenger",
+        round_n=1,
+        attempt=0,
+        text='["correctness", "clarity"]',
+    )
+    res = step(
+        item, [bad], cfg=_cfg(max_rounds=3), harness=DEFAULT_HARNESS, domain=domain, grounding=grounding
+    )
+    assert res.state.state == State.NEED_REFLECTION
+
+
+def test_safety_filter_exception_fails_closed_to_reflection(domain, grounding):
+    # A user filter that raises must fail closed, not livelock the item (H3).
+    cfg = _cfg(max_rounds=3)
+    cfg.safety.enabled = True
+    item = _seed_item(grounding, state=State.NEED_CANDIDATE)
+    resp = StepResponse(
+        request_id=stable_id("i1", 1, "challenger", 0),
+        role="challenger",
+        round_n=1,
+        attempt=0,
+        text=_challenger_text(),
+    )
+
+    def _raising_filter(_text: str):
+        raise RuntimeError("DLP backend down")
+
+    res = step(
+        item,
+        [resp],
+        cfg=cfg,
+        harness=DEFAULT_HARNESS,
+        domain=domain,
+        grounding=grounding,
+        safety_filter=_raising_filter,
+    )
+    assert res.state.state == State.NEED_REFLECTION
+    cr = res.completed_round
+    assert cr is not None
+    quality = cr.quality
+    assert quality is not None
+    assert any("filter_error" in f for f in quality.failures)
+
+
 def test_need_candidate_safety_block_goes_to_reflection(domain, grounding):
     cfg = _cfg(safety_enabled=False)
     cfg.safety.enabled = True

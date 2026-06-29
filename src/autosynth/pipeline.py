@@ -261,7 +261,19 @@ def _on_challenger(item: ItemState, relevant: list[StepResponse], ctx: StepConte
         )
 
     if ctx.cfg.safety.enabled and ctx.safety_filter is not None:
-        verdict = ctx.safety_filter(_safety_text(candidate))
+        try:
+            verdict = ctx.safety_filter(_safety_text(candidate))
+        except Exception as e:
+            # User-supplied filter: fail closed rather than let it escape step().
+            return _go_to_reflection_or_reject(
+                replace(item, candidate=candidate),
+                ctx,
+                failure_quality=QualityCheck(
+                    passed=False,
+                    failures=[f"safety:filter_error:{e}"],
+                    notes="safety filter raised",
+                ),
+            )
         if not verdict.allowed:
             return _go_to_reflection_or_reject(
                 replace(item, candidate=candidate),

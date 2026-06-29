@@ -336,3 +336,18 @@ def test_resume_after_watermark_reset_is_idempotent(store, cfg, docs_dir):
     assert disp2.run().accepted == 2  # re-finalized from re-delivered, already-scored responses
     assert store.conn.execute("SELECT COUNT(*) FROM solver_scores").fetchone()[0] == scores_before  # no dup
     assert store.conn.execute("SELECT COUNT(*) FROM accepted").fetchone()[0] == 2
+
+
+def test_dispatcher_dead_letters_crashing_step(store, cfg, docs_dir, monkeypatch):
+    # A crashing step() must terminate the item, not re-qualify it forever: this
+    # test hangs on regression (livelock) instead of failing (C1).
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("synthetic step crash")
+
+    monkeypatch.setattr("autosynth.dispatcher.core.step", _boom)
+    disp, grounding = _seed_run(store, cfg, docs_dir)
+    summary = disp.run()
+    assert summary.rejected == len(grounding)
+    assert summary.accepted == 0
+    rows = store.conn.execute("SELECT rejection_reasons FROM items WHERE state='REJECTED'").fetchall()
+    assert rows and all("step crashed" in (row[0] or "") for row in rows)

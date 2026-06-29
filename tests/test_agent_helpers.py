@@ -16,6 +16,7 @@ from autosynth.schemas import (
     Round,
     RubricCriterion,
 )
+from autosynth.utils import extract_json
 
 
 @pytest.fixture
@@ -111,6 +112,28 @@ def test_challenger_parse_response_handles_garbage_rubric_weights():
     )
     cand = challenger.parse_response(text, source_id="s1", round_n=1, domain_name="qa")
     assert cand.rubric[0].weight == 1  # defaulted
+
+
+def test_challenger_parse_response_tolerates_string_rubric_items():
+    # Wrong inner shape (rubric of bare strings) must coerce, not raise (C1 vector b).
+    text = json.dumps(
+        {"payload": {"question": "Q?"}, "reference_output": "r", "rubric": ["correctness", "clarity"]}
+    )
+    cand = challenger.parse_response(text, source_id="s1", round_n=1, domain_name="qa")
+    assert [c.description for c in cand.rubric] == ["correctness", "clarity"]
+    assert all(c.weight == 1 for c in cand.rubric)
+
+
+def test_extract_json_rejects_non_object():
+    # Non-object JSON breaks the dict contract callers rely on; reject it (C1 vector a).
+    for bad in ('["correctness", "clarity"]', "42", '"accept"', "true", "null"):
+        with pytest.raises(ValueError):
+            extract_json(bad)
+
+
+def test_extract_json_salvages_embedded_object():
+    assert extract_json('prose [1, 2] then {"a": 1} tail') == {"a": 1}
+    assert extract_json('Here you go: {"x": {"y": 2}}') == {"x": {"y": 2}}
 
 
 # ---------------------------------------------------------------------------

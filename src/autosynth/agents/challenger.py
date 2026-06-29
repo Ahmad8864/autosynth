@@ -58,9 +58,13 @@ def parse_response(
     payload = data.get("payload") or {}
     reference_output = data.get("reference_output")
     rubric_raw = data.get("rubric") or []
+    if not isinstance(rubric_raw, list):
+        rubric_raw = []
 
     rubric: list[RubricCriterion] = []
     for i, r in enumerate(rubric_raw):
+        if not isinstance(r, dict):
+            r = {"description": str(r)}  # tolerate a bare-string/scalar criterion
         try:
             weight = int(r.get("weight", 1))
         except (TypeError, ValueError):

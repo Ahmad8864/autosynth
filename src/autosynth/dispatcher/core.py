@@ -204,8 +204,14 @@ class Dispatcher:
                 safety_filter=self.safety_filter,
                 policy=self.policy,
             )
-        except Exception:
-            logger.exception("pipeline step crashed for item {}", item_state.item_id)
+        except Exception as e:
+            # step() is pure, so a crash recurs every tick — retrying livelocks; dead-letter.
+            logger.exception("pipeline step crashed for item {}; rejecting", item_state.item_id)
+            self.store.update_item(
+                item_state.item_id,
+                state=ITEM_REJECTED,
+                rejection_reasons=[f"unrecoverable: pipeline step crashed: {type(e).__name__}: {e}"],
+            )
             return
         self._persist_step_result(result, consumed_watermark=consumed_watermark)
 
