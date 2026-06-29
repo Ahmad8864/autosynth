@@ -437,6 +437,15 @@ class Store:
                 (batch_id, *request_ids),
             )
 
+    def request_ids_for_batch(self, batch_id: str) -> list[str]:
+        """In-flight request ids tagged to a batch — used to reconcile any the
+        provider's results omit before the tag is cleared."""
+        cur = self.conn.execute(
+            "SELECT request_id FROM requests WHERE batch_id=? AND status=?",
+            (batch_id, REQ_IN_FLIGHT),
+        )
+        return [row["request_id"] for row in cur.fetchall()]
+
     def clear_batch(self, batch_id: str) -> None:
         """Remove the batch_id tag from all requests once results are processed."""
         with self.tx() as cur:

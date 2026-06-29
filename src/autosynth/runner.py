@@ -13,7 +13,17 @@ from pathlib import Path
 from loguru import logger
 
 from autosynth.config import ModelConfig, RunConfig
-from autosynth.dispatcher import Dispatcher, RunSummary
+from autosynth.dispatcher import (
+    AnthropicBatchProvider,
+    BatchProvider,
+    Dispatcher,
+    LiteLLMBatchProvider,
+    MockBatchProvider,
+    RunSummary,
+    fulfill_local,
+    make_fulfill_batch,
+    poll_outstanding_batches,
+)
 from autosynth.domain import DomainAdapter, GroundingItem, build_domain
 from autosynth.harness import DEFAULT_HARNESS, HarnessSpec
 from autosynth.llm import LLMClient, LLMConfig, RateLimitSpec
@@ -64,6 +74,7 @@ class Runner:
                     cost_usd=0.0,
                 )
 
+            fulfill, poll_in_flight = self._fulfillment_strategy()
             dispatcher = Dispatcher(
                 store=self.store,
                 llm=self.llm,
@@ -72,10 +83,41 @@ class Runner:
                 run_id=self.run_id,
                 harness=self.harness,
                 grounding=grounding,
+                fulfill=fulfill,
+                poll_in_flight=poll_in_flight,
             )
             return dispatcher.run()
         finally:
             self.store.close()
+
+    def _fulfillment_strategy(self):
+        """Pick the dispatcher's fulfill + poll hooks from ``dispatcher.mode``.
+
+        ``local`` (default) streams over HTTP; ``batch`` submits to a provider
+        batch API (see :meth:`_batch_provider`).
+        """
+        if self.cfg.dispatcher.mode != "batch":
+            return fulfill_local, None
+        provider = self._batch_provider()
+
+        def poll_in_flight(dispatcher):
+            return poll_outstanding_batches(provider, dispatcher)
+
+        return make_fulfill_batch(provider), poll_in_flight
+
+    def _batch_provider(self) -> BatchProvider:
+        """Build the batch provider named by ``dispatcher.batch_provider``:
+        ``mock`` (in-process, offline), ``anthropic`` (native Message Batches),
+        else LiteLLM's OpenAI-style batch API for that provider."""
+        name = self.cfg.dispatcher.batch_provider
+        if name == "mock":
+            return MockBatchProvider(self.llm)
+        if name == "anthropic":
+            return AnthropicBatchProvider()
+        return LiteLLMBatchProvider(
+            provider=name,
+            completion_window=self.cfg.dispatcher.batch_completion_window,
+        )
 
     def close(self) -> None:
         """Close the run's store connection (idempotent). Use when a Runner is

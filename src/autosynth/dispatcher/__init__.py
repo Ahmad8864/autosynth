@@ -8,9 +8,11 @@ variant lives in :mod:`autosynth.dispatcher.batch`.
 from __future__ import annotations
 
 from autosynth.dispatcher.batch import (
+    AnthropicBatchProvider,
     BatchHandle,
     BatchProvider,
     BatchResult,
+    LiteLLMBatchProvider,
     MockBatchProvider,
     make_fulfill_batch,
     poll_outstanding_batches,
@@ -27,6 +29,8 @@ __all__ = [
     "BatchResult",
     "BatchProvider",
     "MockBatchProvider",
+    "LiteLLMBatchProvider",
+    "AnthropicBatchProvider",
     "make_fulfill_batch",
     "poll_outstanding_batches",
 ]

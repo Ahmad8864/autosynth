@@ -114,8 +114,31 @@ point `metaopt.mutator` at a strong reasoning model. Meta-opt reuses your existi
 
 ## Batch mode
 
-The dispatcher can submit requests through provider batch APIs (OpenAI `/v1/batches`,
-Anthropic message batches) for the ~50% cost discount. The `BatchProvider` protocol and a
-`MockBatchProvider` are in the box (`src/autosynth/dispatcher/batch.py`); real provider
-implementations are not — wiring those up is the next piece of work. If you only have a few
-thousand requests, `fulfill_local` is fine.
+The dispatcher can submit requests through provider batch APIs for the ~50% cost discount
+instead of streaming them over HTTP. Enable it with `dispatcher.mode: batch` (and
+`batch_provider: mock` for an offline run).
+
+`mode: batch` swaps the dispatcher's fulfill strategy: pending requests are grouped by provider,
+submitted as a batch, then polled each loop tick until the provider marks them done. The state
+machine is unchanged across the SLA wait, so kill/resume works mid-batch — resume re-polls the
+batches still tagged in-flight.
+
+Three providers implement the `BatchProvider` protocol in `src/autosynth/dispatcher/batch.py`;
+see the class docstrings for the wire detail:
+
+- **`LiteLLMBatchProvider`** (`batch_provider: openai`, default) — the OpenAI-style
+  upload → create → poll → download flow over LiteLLM; covers whatever LiteLLM's batch API
+  supports.
+- **`AnthropicBatchProvider`** (`batch_provider: anthropic`) — Anthropic's native Message
+  Batches API, which LiteLLM's unified `create_batch` doesn't model, so it calls the REST
+  endpoints directly.
+- **`MockBatchProvider`** (`batch_provider: mock`) — in-process, for tests and offline demos.
+
+Any request a terminal batch returns no result for is failed, so a partial or failed batch can't
+strand the run.
+
+**Limits:** JSON-mode requests go through plain provider JSON mode (OpenAI `{"type":
+"json_object"}`; on Anthropic the prompt alone, as it has no `response_format` knob), not a strict
+schema. Per-request cost is best-effort — litellm's list price, so the batch discount isn't
+subtracted and budget enforcement over-estimates (stopping early, not overshooting). A run assumes
+a single batch provider.

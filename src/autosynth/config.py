@@ -128,6 +128,10 @@ class DispatcherConfig(_StrictModel):
     max_request_failures: int = 3  # request retries before terminal REJECTED
     items_per_advance: int = 50  # max items to advance per loop iteration
 
+    mode: Literal["local", "batch"] = "local"  # "batch" = provider batch API: ~50% cheaper, waits the SLA
+    batch_provider: str = "openai"  # batch backend; "mock" = in-process provider (offline)
+    batch_completion_window: str = "24h"  # provider batch SLA window
+
 
 class MetaOptConfig(_StrictModel):
     """Settings for the meta-optimization loop (paper §meta-opt).
@@ -180,7 +184,7 @@ class RunConfig(_StrictModel):
     resume: bool = True
 
     dispatcher: DispatcherConfig = Field(default_factory=DispatcherConfig)
-    budget_usd: float | None = None  # null = unlimited
+    budget_usd: float | None = None  # null = unlimited; batch mode counts list price (real spend lower)
 
     metaopt: MetaOptConfig = Field(default_factory=MetaOptConfig)
 

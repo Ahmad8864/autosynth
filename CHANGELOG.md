@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Added
 
+- Batch mode: set `dispatcher.mode: batch` to fulfill requests through provider batch APIs for the ~50% cost discount, choosing the backend with `batch_provider` (`openai` — any OpenAI-style provider via LiteLLM, `anthropic` — native Message Batches, or `mock` — in-process, no keys). Kill/resume works mid-batch.
+
 ### Changed
 
 ### Fixed
