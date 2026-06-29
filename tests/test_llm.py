@@ -7,7 +7,6 @@ to ``litellm.completion_cost``, retry on transient errors.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import pytest
@@ -471,16 +470,19 @@ def test_real_dispatch_gives_up_after_max_retries(monkeypatch):
 
 
 def test_complete_respects_rate_limit():
+    """complete() acquires from the model's bucket before dispatching. We inject
+    a fake-clock bucket so the throttle is asserted deterministically rather than
+    by sleeping ~1s in real time (the spec→bucket wiring is covered separately by
+    the _limiter_for tests above)."""
     register_mock("llm_test_slow", lambda role, msgs: "ok")
-    cfg = LLMConfig(rate_limits={"mock/llm_test_slow": RateLimitSpec(rpm=60, burst=1)})
-    client = LLMClient(cfg)
-    # 2 calls; the second waits ~1s for refill. Use a tight time budget.
-    t0 = time.monotonic()
-    client.complete(_req(model_key="mock/llm_test_slow", request_id="a"))
-    client.complete(_req(model_key="mock/llm_test_slow", request_id="b"))
-    elapsed = time.monotonic() - t0
-    # 60 rpm = 1 per second; burst=1 → second call waits ~1s
-    assert 0.8 <= elapsed <= 1.4
+    clock = FakeClock()
+    sleep = FakeSleep(clock)
+    client = LLMClient()
+    # rpm=60 → 1 token/sec, burst=1: the second call must wait one full second.
+    client._buckets["mock/llm_test_slow"] = TokenBucket(rate_per_sec=1.0, burst=1, clock=clock, sleep=sleep)
+    client.complete(_req(model_key="mock/llm_test_slow", request_id="a"))  # burst slot
+    client.complete(_req(model_key="mock/llm_test_slow", request_id="b"))  # waits for refill
+    assert sleep.calls == [pytest.approx(1.0, rel=1e-6)]
 
 
 # ---------------------------------------------------------------------------

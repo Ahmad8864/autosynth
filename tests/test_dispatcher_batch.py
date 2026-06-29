@@ -124,8 +124,8 @@ def test_dispatcher_drives_run_via_batch_provider(store, docs_dir, tmp_path):
     disp = _make_dispatcher(store, docs_dir, tmp_path, provider)
     summary = disp.run()
     # Default mock scenario accepts on round 1; with 1 weak + 1 strong it
-    # satisfies the rubric and gets accepted.
-    assert summary.accepted == 1 or summary.rejected == 1  # either is fine for batch path
+    # satisfies the rubric and gets accepted — deterministic over the batch path.
+    assert summary.accepted == 1 and summary.rejected == 0
 
 
 def test_batch_id_is_tagged_then_cleared(store, docs_dir, tmp_path):

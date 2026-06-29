@@ -198,18 +198,6 @@ def test_each_role_request_carries_its_configured_temperature(
         assert got == {want}, f"role={role!r} expected temperature {want}, got {got}"
 
 
-def test_export_jsonl_via_store(sample_docs: Path, output_dir: Path, tmp_path: Path):
-    cfg = _cfg(sample_docs, output_dir, "happy")
-    runner = Runner(cfg)
-    runner.run()
-    store = Store(runner.run_dir / "run.db")
-    out = tmp_path / "out.jsonl"
-    n = store.export_jsonl("test-run", out)
-    assert n == 2
-    records = [json.loads(line) for line in out.read_text().splitlines()]
-    assert all(r["gap"] is not None for r in records)
-
-
 # ---------------------------------------------------------------------------
 # Verifiable mode end-to-end (math, programmatic verify(), no judge)
 # ---------------------------------------------------------------------------

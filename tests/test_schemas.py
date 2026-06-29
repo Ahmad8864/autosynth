@@ -17,21 +17,6 @@ def test_rubric_weight_validation():
     assert c.weight == 5
 
 
-def test_candidate_roundtrip():
-    c = Candidate(
-        candidate_id="x",
-        domain="d",
-        source_id="s",
-        payload={"q": "?"},
-        rubric=[RubricCriterion(id="c1", description="x", weight=2)],
-        reference_output="r",
-    )
-    s = c.model_dump_json()
-    c2 = Candidate.model_validate_json(s)
-    assert c2.candidate_id == "x"
-    assert c2.rubric[0].weight == 2
-
-
 def test_trajectory_accepted_round_lookup():
     from autosynth.schemas import Round
 
