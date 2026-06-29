@@ -6,7 +6,16 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.2.1] - 2026-06-29
+
+### Added
+
 - Batch mode: set `dispatcher.mode: batch` to fulfill requests through provider batch APIs for the ~50% cost discount, choosing the backend with `batch_provider` (`openai` — any OpenAI-style provider via LiteLLM, `anthropic` — native Message Batches, or `mock` — in-process, no keys). Kill/resume works mid-batch.
+- Tested and advertised support for Python 3.13 and 3.14.
 
 ### Changed
 
@@ -64,7 +73,8 @@ Initial release.
 - LiteLLM-based real provider routing with per-role configuration.
 - CLI: `run`, `resume`, `status`, `inspect-run`, `export`, `metaopt`, `init-domain`.
 
-[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Ahmad8864/autosynth/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Ahmad8864/autosynth/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Ahmad8864/autosynth/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Ahmad8864/autosynth/releases/tag/v0.1.0
