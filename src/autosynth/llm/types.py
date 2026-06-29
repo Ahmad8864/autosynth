@@ -13,10 +13,6 @@ from autosynth.utils import extract_json
 
 Message = dict[str, str]  # {"role": "system|user|assistant", "content": "..."}
 
-# Agent roles understood by the pipeline; the field is typed `str` for forward
-# compatibility (e.g. user-defined roles in custom domains).
-ROLES = ("challenger", "quality", "weak", "strong", "judge", "reflector", "meta_mutator")
-
 
 @dataclass(frozen=True)
 class LLMRequest:

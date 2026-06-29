@@ -622,17 +622,7 @@ def _finalize_decision(
 
     if item.current_round < ctx.cfg.loop.max_rounds:
         if use_reflector:
-            rreq = reflector_agent.build_request(
-                item_id=item.item_id,
-                round_n=item.current_round,
-                **_dispatch_kwargs(ctx.cfg, "reflector"),
-                prior_rounds=list(rounds_history),
-                domain_name=ctx.domain.name,
-                leakage_rules=ctx.domain.leakage_rules(),
-                weak_ceiling=ctx.policy.weak_ceiling,
-                strong_floor=ctx.policy.strong_floor,
-                harness=ctx.harness,
-            )
+            rreq = _build_reflector_request(item, ctx, rounds_history)
             new_state = replace(item, state=State.NEED_REFLECTION, **common)
             return StepResult(
                 state=new_state,
@@ -701,6 +691,28 @@ def _find_role(responses: list[StepResponse], role: str) -> StepResponse | None:
     return None
 
 
+def _build_reflector_request(
+    item: ItemState, ctx: StepContext, rounds_history: tuple[Round, ...]
+) -> LLMRequest:
+    """Reflector request for the item entering its next round.
+
+    Both improve paths emit this: a scored reject (``_finalize_decision``) and an
+    early structural/quality/safety reject (``_go_to_reflection_or_reject``). Keep
+    it in one place so the policy/domain wiring can't drift between them.
+    """
+    return reflector_agent.build_request(
+        item_id=item.item_id,
+        round_n=item.current_round,
+        **_dispatch_kwargs(ctx.cfg, "reflector"),
+        prior_rounds=list(rounds_history),
+        domain_name=ctx.domain.name,
+        leakage_rules=ctx.domain.leakage_rules(),
+        weak_ceiling=ctx.policy.weak_ceiling,
+        strong_floor=ctx.policy.strong_floor,
+        harness=ctx.harness,
+    )
+
+
 def _go_to_reflection_or_reject(
     item: ItemState,
     ctx: StepContext,
@@ -726,17 +738,7 @@ def _go_to_reflection_or_reject(
     )
     rounds_history = item.rounds_history + (round_obj,)
     if item.current_round < ctx.cfg.loop.max_rounds:
-        rreq = reflector_agent.build_request(
-            item_id=item.item_id,
-            round_n=item.current_round,
-            **_dispatch_kwargs(ctx.cfg, "reflector"),
-            prior_rounds=list(rounds_history),
-            domain_name=ctx.domain.name,
-            leakage_rules=ctx.domain.leakage_rules(),
-            weak_ceiling=ctx.policy.weak_ceiling,
-            strong_floor=ctx.policy.strong_floor,
-            harness=ctx.harness,
-        )
+        rreq = _build_reflector_request(item, ctx, rounds_history)
         new_state = replace(
             item,
             state=State.NEED_REFLECTION,

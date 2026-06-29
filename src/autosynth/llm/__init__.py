@@ -19,7 +19,7 @@ from __future__ import annotations
 from autosynth.llm.client import LLMClient, LLMConfig
 from autosynth.llm.mock import MockHandler, register_mock
 from autosynth.llm.rate_limit import RateLimitSpec, TokenBucket
-from autosynth.llm.types import ROLES, LLMRequest, Message, Response
+from autosynth.llm.types import LLMRequest, Message, Response
 
 __all__ = [
     "LLMRequest",
@@ -30,6 +30,5 @@ __all__ = [
     "Message",
     "MockHandler",
     "TokenBucket",
-    "ROLES",
     "register_mock",
 ]
