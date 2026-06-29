@@ -21,6 +21,12 @@ from autosynth.llm import (
     TokenBucket,
     register_mock,
 )
+from autosynth.llm.response_format import (
+    LoopJudgeOutput,
+    QualityOutput,
+    ReflectorOutput,
+    response_format_for,
+)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -475,3 +481,42 @@ def test_complete_respects_rate_limit():
     elapsed = time.monotonic() - t0
     # 60 rpm = 1 per second; burst=1 → second call waits ~1s
     assert 0.8 <= elapsed <= 1.4
+
+
+# ---------------------------------------------------------------------------
+# structured-outputs response_format gating
+# ---------------------------------------------------------------------------
+
+
+class _Litellm:
+    def __init__(self, supported: bool | Exception):
+        self._supported = supported
+
+    def supports_response_schema(self, model: str) -> bool:
+        if isinstance(self._supported, Exception):
+            raise self._supported
+        return self._supported
+
+
+def test_response_format_uses_strict_schema_when_role_and_provider_support_it():
+    lite = _Litellm(supported=True)
+    assert response_format_for(lite, _req(role="quality")) is QualityOutput
+    assert response_format_for(lite, _req(role="loop_judge")) is LoopJudgeOutput
+    assert response_format_for(lite, _req(role="reflector")) is ReflectorOutput
+
+
+def test_response_format_falls_back_to_json_object_when_unsupported():
+    lite = _Litellm(supported=False)
+    assert response_format_for(lite, _req(role="quality")) == {"type": "json_object"}
+
+
+def test_response_format_free_form_roles_stay_json_object():
+    # challenger payload / judge per_criterion can't be a strict schema.
+    lite = _Litellm(supported=True)
+    assert response_format_for(lite, _req(role="challenger")) == {"type": "json_object"}
+    assert response_format_for(lite, _req(role="judge")) == {"type": "json_object"}
+
+
+def test_response_format_falls_back_when_support_check_raises():
+    lite = _Litellm(supported=RuntimeError("old litellm"))
+    assert response_format_for(lite, _req(role="quality")) == {"type": "json_object"}

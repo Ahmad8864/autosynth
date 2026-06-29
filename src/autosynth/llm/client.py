@@ -23,6 +23,7 @@ from tenacity import (
 
 from autosynth.llm.mock import dispatch_mock
 from autosynth.llm.rate_limit import RateLimitSpec, TokenBucket
+from autosynth.llm.response_format import response_format_for
 from autosynth.llm.types import LLMRequest, Response
 
 
@@ -170,7 +171,7 @@ class LLMClient:
             if req.max_tokens is not None:
                 kwargs["max_tokens"] = req.max_tokens
             if req.json_mode:
-                kwargs["response_format"] = {"type": "json_object"}
+                kwargs["response_format"] = response_format_for(litellm, req)
             extras = self.cfg.model_extras.get(req.model_key)
             if extras:
                 kwargs = {**extras, **kwargs}
