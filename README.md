@@ -12,7 +12,7 @@ The headline trick: for each candidate datapoint, run a *weak* solver and a *str
 [paper]: https://doi.org/10.48550/arXiv.2606.25996
 [blog]: https://facebookresearch.github.io/RAM/blogs/autodata/
 
-> **Status:** alpha (0.2.0). The API is still moving. Pin a commit if you're depending on it.
+> **Status:** alpha. The API is still moving — pin a commit if you're depending on it.
 
 ## Install
 
@@ -21,9 +21,7 @@ uv pip install autosynth             # core
 uv pip install "autosynth[hf]"       # + Hugging Face export
 ```
 
-Python 3.10+. Plain `pip install autosynth` works too.
-
-For a from-source / editable install for development, see [CONTRIBUTING.md](CONTRIBUTING.md).
+Python 3.10+. Plain `pip install autosynth` works too. For a from-source / editable install for development, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quick start (no API keys)
 
@@ -71,84 +69,28 @@ For each source item, autosynth runs the same five-step loop until the candidate
 
 ### Acceptance modes
 
-The default is **rubric** mode: the judge scores each attempt against the rubric and acceptance is a threshold-and-gap test. Defaults:
+Three regimes decide whether a candidate is kept; pick per task with `acceptance.mode` (or omit it to use the domain's default):
 
-- weak average ≤ 0.65, weak max ≤ 0.75
-- strong average in [0.60, 0.95)
-- strong − weak gap ≥ 0.20
-- quality must have passed
-
-For tasks with a checkable answer (math, code, exact extraction), use **verifiable** mode: the domain implements `verify(candidate, response) -> bool | None`, the judge is skipped, and acceptance is a count gate — *weak must fail, strong must succeed*. Defaults are calibrated for 4 rollouts: accept when the weak solver gets ≤ 1 of 4 correct and the strong ≥ 3 of 4.
-
-```yaml
-loop:        { weak_samples: 4, strong_samples: 4 }
-acceptance:
-  mode: verifiable          # or omit to use the domain's default_acceptance_mode
-  verifiable_weak_max_correct: 1
-  verifiable_strong_min_correct: 3
-```
-
-The bundled `math_word_problems` domain ships in verifiable mode (exact-fraction answer checking).
-
-For messy, open-ended tasks where no fixed threshold fits, use **judge** mode: the rubric judge still scores every rollout, then a *loop-judge* reads the per-rollout weak/strong patterns and decides accept / improve, supplying the next round's suggestion directly (the reflector is skipped).
+- **rubric** (default) — the judge scores each rollout against the rubric; acceptance is a threshold-and-gap test. Best when quality is a matter of degree.
+- **verifiable** — the domain checks answers programmatically (`verify()`), the judge is skipped, and acceptance is a count gate: *weak must fail, strong must succeed.* Use for checkable answers (math, code, exact extraction). The bundled `math_word_problems` domain ships this way.
+- **judge** — a loop-judge LLM reads the per-rollout weak/strong patterns and decides accept/improve each round. Use for open-ended tasks where no fixed threshold fits.
 
 ```yaml
 acceptance:
-  mode: judge          # loop-judge decides per round; no weak_*/strong_* thresholds apply
+  mode: verifiable     # or: rubric | judge
 ```
 
-**Conditional strong eval (cost saver).** Set `loop.short_circuit_strong: true` to run the weak solver first and only score the strong solver when the weak gate passes (the example is hard enough). This skips strong + judge calls on the ~80% of too-easy rounds, at the cost of serializing the round. Off by default; leave it off under `judge` mode, where it only adds serialization without skipping anything.
-
-## Architecture
-
-The runtime is an event-sourced pipeline over a SQLite database. A pure `step()` function advances item state; the dispatcher fulfills LLM requests and writes responses back; the store is the durable record.
-
-```
-pipeline.step()        pure state machine: (state, responses) -> (state, requests)
-dispatcher             reads ready items, calls step(), fulfills requests
-  ├─ fulfill_local     threadpool over HTTP
-  └─ fulfill_batch     provider batch APIs (see "Batch" below)
-store                  SQLite + WAL, one run.db per run
-llm                    provider routing, rate-limit, retry, cost accounting
-```
-
-Item states: `PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES` with `NEED_REFLECTION` on the reject branch and `ACCEPTED` / `REJECTED` as terminals. `NEED_SCORES` fans out `N × weak + N × strong` solver requests in parallel; each judge fires the moment its solver lands. Concurrency is bounded by `cfg.dispatcher.concurrency`.
-
-The fact that `step()` is pure is the only reason resume works. Kill the process at any point — including mid-batch — and `autosynth resume` picks up exactly where it left off. In-flight local requests revert to pending; in-flight batch requests stay tagged and get polled.
-
-## CLI
-
-```
-autosynth run --config CONFIG.yaml [--run-id ID] [--resume RUN_ID] [-v]
-autosynth resume RUN_DIR
-autosynth status RUN_DIR
-autosynth inspect-run RUN_DIR [--stuck]
-autosynth export --run RUN_DIR --format jsonl|hf [--out PATH]
-autosynth metaopt --config CONFIG.yaml
-autosynth init-domain NAME --out my_domain.py
-```
-
-`status` is the one-liner; `inspect-run` is the detailed per-item table. `--stuck` filters to items that haven't reached a terminal state, which is what you want when something looks wrong.
-
-## Run outputs
-
-Everything for a run lives under `outputs/<run_id>/`:
-
-- `run.db` — SQLite. Tables: `runs`, `items`, `rounds`, `requests`, `responses`, `solver_scores`, `accepted`. Queryable with the `sqlite3` CLI and safe to share.
-- `config.snapshot.yaml` — the exact config used. Resume reads this if you don't pass `--config`.
-- `accepted.jsonl` / `hf_export/` — produced on `autosynth export`, not written automatically.
-
-Each accepted record contains `input`, `reference_output`, `rubric`, `domain`, `source_id`, `metadata`, the weak/strong/gap scores, per-attempt solver scores, and the acceptance rationale.
+The exact default thresholds live in `AcceptanceConfig` (`src/autosynth/config.py`); the mechanism, plus the `loop.short_circuit_strong` cost-saver, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#acceptance).
 
 ## Writing a domain
 
-A domain plugin is one class subclassing `DomainAdapter` with six methods. Scaffold one with:
+A domain plugin is one class subclassing `DomainAdapter` with six required methods. Scaffold one with:
 
 ```bash
-uv run autosynth init-domain customer_support -o my_domain.py
+uv run autosynth init-domain customer_support --out my_domain.py
 ```
 
-Fill in `load_grounding`, `generation_prompt`, `validate_candidate`, `solver_prompt`, `quality_prompt`, and `judge_prompt`, then point your config at it. For a checkable-answer domain, also override `verify()` and set `default_acceptance_mode = "verifiable"` (see `math_word_problems.py`) — the judge prompt is then unused.
+Fill in `load_grounding`, `generation_prompt`, `validate_candidate`, `solver_prompt`, `quality_prompt`, and `judge_prompt`, then point your config at it. For a checkable-answer domain, also override `verify()` and set `default_acceptance_mode = "verifiable"` — the judge prompt is then unused.
 
 ```yaml
 domain:
@@ -157,53 +99,55 @@ domain:
     source_csv: ./tickets.csv
 ```
 
-The two bundled domains (`src/autosynth/domains/qa_from_documents.py`, `src/autosynth/domains/math_word_problems.py`) are short and worth reading before you write your own.
+The two bundled domains (`src/autosynth/domains/qa_from_documents.py`, `math_word_problems.py`) are short and worth reading before you write your own.
 
 ## Meta-optimization
 
-`autosynth metaopt --config CONFIG.yaml` runs the paper's secondary loop: evolve the orchestrator's *prompts* over generations. The unit of evolution is a `HarnessSpec` — a structured bag of rule strings that get injected into each agent's system prompt, plus a couple of numeric knobs.
-
-The loop, roughly:
-
-1. Score the seed harness on training and validation source items.
-2. Each iteration: Boltzmann-sample a parent from the population (T=0.1 over training scores), summarize that parent's most recent rejection reasons, ask the mutator LLM for a structured diff, apply it, dedupe, and re-evaluate.
-3. Accept the mutation only if `child.val > parent.val` — the paper's gate.
-
-Mutations operate on the harness, not on Python source. That preserves the main lever the paper exercises (prompt-text edits) without the sandboxing headache of a code-editing agent. Swap in your own mutator if you want richer edits.
-
-Try it without keys:
+`autosynth metaopt --config CONFIG.yaml` runs the paper's secondary loop: evolve the orchestrator's *prompts* over generations, keeping a mutation only when it beats its parent on validation. Try it without keys:
 
 ```bash
 uv run autosynth metaopt --config configs/metaopt_mock.yaml
 ```
 
-The mock scenario seeds at 0% accept, the mutator proposes a source-specificity rule on iteration 1 that lifts both train and val to 100%, that mutation is accepted, and subsequent iterations get deduplicated. Population, lineage, and per-iteration decisions are written under `outputs/metaopt/<run_id>/iterations/`.
+The algorithm, the `HarnessSpec` unit of evolution, and how to enable it for real are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#meta-optimization).
 
-To run for real, add `metaopt: { enabled: true, max_iterations: 50, ... }` to your existing config and point `metaopt.mutator` at a strong reasoning model. Meta-opt reuses your existing `domain`, `acceptance`, `loop`, and agent settings.
+## CLI
 
-## Batch mode
+```
+autosynth run         --config CONFIG.yaml [--resume RUN_ID]   # generate a dataset
+autosynth resume      RUN_DIR                                  # continue an interrupted run
+autosynth status      RUN_DIR                                  # one-line progress
+autosynth inspect-run RUN_DIR [--stuck]                        # detailed per-item table
+autosynth export      --run RUN_DIR --format jsonl|hf          # write accepted records
+autosynth metaopt     --config CONFIG.yaml                     # evolve the prompt harness
+autosynth init-domain NAME --out my_domain.py                  # scaffold a domain plugin
+```
 
-The dispatcher can submit requests through provider batch APIs (OpenAI `/v1/batches`, Anthropic message batches) for the 50% cost discount. The `BatchProvider` protocol and a `MockBatchProvider` are in the box. Real provider implementations are not — wiring those up is the next piece of work. If you only have a few thousand requests, `fulfill_local` is fine.
+Run `autosynth <command> --help` for the full flag set. `--stuck` filters to items that haven't reached a terminal state — what you want when something looks wrong.
 
-## Safety and quality notes
+## Run outputs
+
+Everything for a run lives under `outputs/<run_id>/`: the `run.db` SQLite database (the source of truth, safe to share), a `config.snapshot.yaml` that resume reads back, and — only after `autosynth export` — `accepted.jsonl` / `hf_export/`. Inspect the database directly with `sqlite3 outputs/<run_id>/run.db .schema`; the table layout and accepted-record fields are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#run-database).
+
+## Safety and limitations
 
 - Every accepted datapoint carries an `acceptance_rationale` and a serialized `EvalReport`. There is no silent acceptance path.
 - The built-in PII filter (`safety.enabled: true`) is a conservative heuristic, not a real DLP. For anything regulated, plug your own module in via `safety.filter`.
 - Solvers are never *told* they're the weak or strong solver — the differential comes from the model/temperature choice. The paper flags adversarial prompting here as a gaming vector, so don't.
 - There is no diversity / near-duplicate check on accepted examples yet. If you need that, extend `store.insert_accepted` with MinHash or embedding-based dedupe.
-- LLM-as-judge bias is what it is. The rubric weight cap (≤ 7) and the positive-only rule from the paper help, but don't pretend they eliminate it.
+- LLM-as-judge bias is what it is. The rubric weight cap and the positive-only rule from the paper help, but don't pretend they eliminate it.
 
-## Tests
+## Architecture
+
+The runtime is an event-sourced pipeline over SQLite: a pure `step()` state machine, a dispatcher that fulfills LLM requests, and a durable store. Because `step()` is pure, you can kill a run at any point and `autosynth resume` picks up exactly where it left off. The full design — runtime, item state machine, and batch mode — is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Develop
 
 ```bash
-uv run pytest
+uv run pytest          # runs offline against the in-process mock — no keys, no network
 ```
 
-The full suite (~130 tests) runs against the in-process mock provider — no keys, no network. The interesting bits to look at if you're touching the core:
-
-- `test_pure_pipeline.py` — exhaustive state-transition coverage of `step()`, including the partial-completion no-op invariant.
-- `test_store.py` — `claim_pending` atomicity under threads, resume normalization.
-- `test_dispatcher.py` — end-to-end accept, 100-request concurrent fulfill, budget abort, kill/resume.
+Setup, linting, commit conventions, and how to add a domain are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
