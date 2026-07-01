@@ -7,9 +7,12 @@ import these without pulling in litellm or the mock registry.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from autosynth.utils import extract_json
+
+if TYPE_CHECKING:
+    from pydantic import BaseModel
 
 Message = dict[str, str]  # {"role": "system|user|assistant", "content": "..."}
 
@@ -29,6 +32,8 @@ class LLMRequest:
     parent_response_id: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    # In-memory only; never persisted (rebuilt during hydration from role+domain).
+    response_schema: type[BaseModel] | None = None
 
 
 @dataclass(frozen=True)

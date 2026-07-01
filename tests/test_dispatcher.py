@@ -307,6 +307,27 @@ def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
     assert summary.accepted == 2
 
 
+def test_hydration_reattaches_challenger_schema(store, cfg, docs_dir):
+    """A pending challenger request, once claimed and re-hydrated (the resume /
+    re-fulfill path), must carry the domain's strict payload schema. The schema
+    is never persisted, so it has to be rebuilt from role + domain — otherwise
+    strict shape enforcement would silently vanish on resume."""
+    from autosynth.dispatcher.hydration import row_to_llm_request
+    from autosynth.domains.qa_from_documents import QAPayload
+    from autosynth.llm.response_format import challenger_schema_for
+
+    disp, _ = _seed_run(store, cfg, docs_dir)
+    for row in store.items_pending_first_step(cfg.run_id):
+        disp._advance_one(row)
+    claimed = store.claim_pending(limit=10)
+    challengers = [r for r in claimed if r.role == "challenger"]
+    assert challengers  # the first step emits one challenger request per item
+    for req_row in challengers:
+        assert row_to_llm_request(req_row, disp.domain).response_schema is challenger_schema_for(QAPayload)
+        # No domain (e.g. the batch transport, which sends plain JSON mode) → no schema.
+        assert row_to_llm_request(req_row).response_schema is None
+
+
 def test_resume_after_watermark_reset_is_idempotent(store, cfg, docs_dir):
     """Simulate a crash mid-scoring followed by the v2->v3 migration: the item is
     back in NEED_SCORES with its scores persisted and consumed_seq reset to 0, so

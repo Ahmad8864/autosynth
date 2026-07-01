@@ -21,9 +21,14 @@ from autosynth.llm import (
     register_mock,
 )
 from autosynth.llm.response_format import (
+    ChallengerEnvelope,
+    JudgeOutput,
     LoopJudgeOutput,
+    MutatorOutput,
     QualityOutput,
     ReflectorOutput,
+    _strict_compatible,
+    challenger_schema_for,
     response_format_for,
 )
 
@@ -58,6 +63,7 @@ def _req(
     role: str = "weak",
     messages: list[Message] | None = None,
     request_id: str = "req-1",
+    response_schema: Any = None,
 ) -> LLMRequest:
     return LLMRequest(
         request_id=request_id,
@@ -66,6 +72,7 @@ def _req(
         role=role,
         model_key=model_key,
         messages=messages or [{"role": "user", "content": "hello"}],
+        response_schema=response_schema,
     )
 
 
@@ -317,11 +324,13 @@ def test_real_dispatch_passes_json_mode_and_overrides(monkeypatch):
     monkeypatch.setattr(litellm, "completion", fake_completion)
 
     client = LLMClient()
+    # A role with no strict schema exercises the json_object fallback branch
+    # deterministically (no dependency on litellm's per-model schema support).
     req = LLMRequest(
         request_id="r-2",
         item_id="i",
         round_n=1,
-        role="judge",
+        role="weak",
         model_key="openai/gpt-4o",
         messages=[{"role": "user", "content": "x"}],
         json_mode=True,
@@ -505,20 +514,87 @@ def test_response_format_uses_strict_schema_when_role_and_provider_support_it():
     assert response_format_for(lite, _req(role="quality")) is QualityOutput
     assert response_format_for(lite, _req(role="loop_judge")) is LoopJudgeOutput
     assert response_format_for(lite, _req(role="reflector")) is ReflectorOutput
+    assert response_format_for(lite, _req(role="meta_mutator")) is MutatorOutput
 
 
 def test_response_format_falls_back_to_json_object_when_unsupported():
     lite = _Litellm(supported=False)
     assert response_format_for(lite, _req(role="quality")) == {"type": "json_object"}
+    # Even judge/meta_mutator drop back to plain JSON mode on old providers.
+    assert response_format_for(lite, _req(role="judge")) == {"type": "json_object"}
+    assert response_format_for(lite, _req(role="meta_mutator")) == {"type": "json_object"}
 
 
-def test_response_format_free_form_roles_stay_json_object():
-    # challenger payload / judge per_criterion can't be a strict schema.
+def test_response_format_challenger_without_schema_stays_json_object():
+    # A challenger request with no attached response_schema (role alone carries
+    # no fixed shape) falls back to plain JSON mode.
     lite = _Litellm(supported=True)
     assert response_format_for(lite, _req(role="challenger")) == {"type": "json_object"}
+
+
+def test_strict_compatible_classifies_open_map_schemas():
+    from autosynth.domains.math_word_problems import MathProblemPayload
+
+    # Open-keyed dicts (judge per_criterion, generic challenger payload) are not
+    # strict-compatible; every fixed-shape schema is.
+    assert _strict_compatible(JudgeOutput) is False
+    assert _strict_compatible(ChallengerEnvelope) is False
+    assert _strict_compatible(QualityOutput) is True
+    assert _strict_compatible(LoopJudgeOutput) is True
+    assert _strict_compatible(ReflectorOutput) is True
+    assert _strict_compatible(MutatorOutput) is True
+    assert _strict_compatible(challenger_schema_for(MathProblemPayload)) is True
+
+
+def test_response_format_open_map_schema_degrades_to_json_object_even_when_supported():
+    # Schemas with an open map (judge per_criterion; the generic challenger
+    # envelope's free-form payload) are outside the provider strict subset and
+    # 400 on OpenAI/Azure, so the guard falls them back to json_object even when
+    # the provider reports schema support.
+    lite = _Litellm(supported=True)
+    assert challenger_schema_for(None) is ChallengerEnvelope
     assert response_format_for(lite, _req(role="judge")) == {"type": "json_object"}
+    assert response_format_for(lite, _req(role="challenger", response_schema=ChallengerEnvelope)) == {
+        "type": "json_object"
+    }
+
+
+def test_response_format_challenger_uses_dynamic_schema_from_payload_model():
+    from autosynth.domains.math_word_problems import MathProblemPayload
+
+    lite = _Litellm(supported=True)
+    schema = challenger_schema_for(MathProblemPayload)
+    assert schema is not ChallengerEnvelope
+    # payload tightened to the domain model's required fields.
+    fields = schema.model_fields["payload"].annotation
+    assert fields is MathProblemPayload
+    assert response_format_for(lite, _req(role="challenger", response_schema=schema)) is schema
+
+
+def test_challenger_schema_for_is_cached():
+    from autosynth.domains.math_word_problems import MathProblemPayload
+
+    assert challenger_schema_for(MathProblemPayload) is challenger_schema_for(MathProblemPayload)
+    assert challenger_schema_for(None) is challenger_schema_for(None)
+
+
+def test_response_format_explicit_request_schema_wins_over_role():
+    # An attached (strict-compatible) response_schema takes precedence over the
+    # role-based default.
+    from autosynth.domains.math_word_problems import MathProblemPayload
+
+    lite = _Litellm(supported=True)
+    schema = challenger_schema_for(MathProblemPayload)
+    assert response_format_for(lite, _req(role="quality", response_schema=schema)) is schema
 
 
 def test_response_format_falls_back_when_support_check_raises():
+    from autosynth.domains.math_word_problems import MathProblemPayload
+
     lite = _Litellm(supported=RuntimeError("old litellm"))
     assert response_format_for(lite, _req(role="quality")) == {"type": "json_object"}
+    # A strict-compatible challenger schema still degrades when the support probe
+    # itself raises (old litellm) — exercises the except path, not the guard.
+    assert response_format_for(
+        lite, _req(role="challenger", response_schema=challenger_schema_for(MathProblemPayload))
+    ) == {"type": "json_object"}

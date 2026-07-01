@@ -43,7 +43,7 @@ def _one_request(req_row: RequestRow, dispatcher: Dispatcher) -> None:
     # Top-level guard: without an ``as_completed`` collector at the call
     # site, bugs in store writes or hydration would otherwise vanish.
     try:
-        request = row_to_llm_request(req_row)
+        request = row_to_llm_request(req_row, dispatcher.domain)
         try:
             resp: Response = dispatcher.llm.complete(request)
         except Exception as e:

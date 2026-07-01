@@ -74,6 +74,56 @@ def test_challenger_build_request_is_deterministic(domain, grounding):
     assert req1.json_mode is True
 
 
+def test_challenger_build_request_attaches_domain_payload_schema(domain, grounding):
+    from autosynth.domains.qa_from_documents import QAPayload
+    from autosynth.llm.response_format import challenger_schema_for
+
+    req = challenger.build_request(
+        item_id="i1",
+        round_n=1,
+        model_key="mock/foo",
+        grounding=grounding,
+        feedback=[],
+        prior_payloads=[],
+        domain=domain,
+    )
+    assert req.response_schema is challenger_schema_for(QAPayload)
+    assert req.response_schema.model_fields["payload"].annotation is QAPayload
+
+
+def test_challenger_build_request_falls_back_to_generic_envelope(grounding):
+    from autosynth.domain import DomainAdapter
+    from autosynth.llm.response_format import ChallengerEnvelope
+
+    # A domain that doesn't declare payload_model() gets the generic envelope.
+    class NoPayloadDomain(QAFromDocuments):
+        def payload_model(self):
+            return None
+
+    dom = NoPayloadDomain(source_dir=".")
+    assert DomainAdapter.payload_model(dom) is None
+    req = challenger.build_request(
+        item_id="i1",
+        round_n=1,
+        model_key="mock/foo",
+        grounding=grounding,
+        feedback=[],
+        prior_payloads=[],
+        domain=dom,
+    )
+    assert req.response_schema is ChallengerEnvelope
+
+
+def test_builtin_domains_expose_payload_models():
+    from autosynth.domains.math_word_problems import MathProblemPayload, MathWordProblems
+    from autosynth.domains.qa_from_documents import QAFromDocuments, QAPayload
+
+    assert MathWordProblems().payload_model() is MathProblemPayload
+    assert QAFromDocuments(source_dir=".").payload_model() is QAPayload
+    assert set(MathProblemPayload.model_fields) == {"problem", "topic", "difficulty"}
+    assert set(QAPayload.model_fields) == {"question", "context", "reasoning_skills"}
+
+
 def test_challenger_build_request_injects_harness_rules(domain, grounding):
     h = make_harness(challenger_rules=["UNIQUE_MARKER_XYZ"])
     req = challenger.build_request(

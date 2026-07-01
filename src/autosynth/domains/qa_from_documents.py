@@ -12,9 +12,17 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from autosynth.domain import DomainAdapter, GroundingItem, bullet_list, register_domain
 from autosynth.schemas import Candidate
 from autosynth.utils import stable_id
+
+
+class QAPayload(BaseModel):
+    question: str
+    context: str
+    reasoning_skills: list[str] = Field(default_factory=list)
 
 
 @register_domain("qa_from_documents")
@@ -61,6 +69,9 @@ class QAFromDocuments(DomainAdapter):
             "Emit ONE candidate as a JSON object."
         )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
+
+    def payload_model(self) -> type[BaseModel] | None:
+        return QAPayload
 
     # 3. validation -----------------------------------------------------------
     def validate_candidate(self, candidate: Candidate) -> list[str]:

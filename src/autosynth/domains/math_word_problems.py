@@ -12,9 +12,18 @@ from collections.abc import Iterable
 from fractions import Fraction
 from typing import Any
 
+from pydantic import BaseModel
+
 from autosynth.domain import DomainAdapter, GroundingItem, bullet_list, register_domain
 from autosynth.schemas import Candidate
 from autosynth.utils import stable_id
+
+
+class MathProblemPayload(BaseModel):
+    problem: str
+    topic: str
+    difficulty: str
+
 
 _ANSWER_RE = re.compile(r"ANSWER:\s*(.+)", re.IGNORECASE)
 _NUMBER_RE = re.compile(r"-?\d+/\d+|-?\d*\.\d+|-?\d+\.?\d*")
@@ -78,6 +87,9 @@ class MathWordProblems(DomainAdapter):
             "Emit ONE candidate as a JSON object."
         )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
+
+    def payload_model(self) -> type[BaseModel] | None:
+        return MathProblemPayload
 
     def validate_candidate(self, candidate: Candidate) -> list[str]:
         # Rubric weight bounds are enforced upstream (challenger clamps,

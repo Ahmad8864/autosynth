@@ -7,6 +7,7 @@ from typing import Any
 from autosynth.domain import DomainAdapter, GroundingItem
 from autosynth.harness import DEFAULT_HARNESS, HarnessSpec, apply_harness
 from autosynth.llm import LLMRequest
+from autosynth.llm.response_format import challenger_schema_for
 from autosynth.schemas import Candidate, RubricCriterion
 from autosynth.utils import extract_json, stable_id
 
@@ -36,6 +37,7 @@ def build_request(
         model_key=model_key,
         messages=messages,
         json_mode=True,
+        response_schema=challenger_schema_for(domain.payload_model()),
         temperature=temperature,
         max_tokens=max_tokens,
     )

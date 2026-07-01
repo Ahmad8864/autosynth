@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import TYPE_CHECKING
 
 from autosynth.llm import LLMRequest
+from autosynth.llm.response_format import challenger_schema_for
 from autosynth.pipeline import ItemState, State, StepResponse
 from autosynth.schemas import Candidate, EvalReport, QualityCheck, Round
 from autosynth.store import RequestRow, Store
+
+if TYPE_CHECKING:
+    from autosynth.domain import DomainAdapter
 
 _PLACEHOLDER_CANDIDATE = Candidate(
     candidate_id="missing",
@@ -146,8 +151,18 @@ def request_to_row(r: LLMRequest) -> dict:
     }
 
 
-def row_to_llm_request(r: RequestRow) -> LLMRequest:
-    """Hydrate a stored RequestRow back into an LLMRequest for fulfillment."""
+def row_to_llm_request(r: RequestRow, domain: DomainAdapter | None = None) -> LLMRequest:
+    """Hydrate a stored RequestRow back into an LLMRequest for fulfillment.
+
+    The strict challenger `response_schema` is intentionally not persisted (a raw
+    Pydantic class in SQLite would be a serialization hazard); it's rebuilt here
+    from ``role`` + ``domain.payload_model()`` so resumed/re-claimed challenger
+    requests enforce the same shape as fresh ones. ``domain=None`` (e.g. the
+    batch path, which sends plain JSON mode) yields a schema-less request.
+    """
+    response_schema = None
+    if domain is not None and r.role == "challenger":
+        response_schema = challenger_schema_for(domain.payload_model())
     return LLMRequest(
         request_id=r.request_id,
         item_id=r.item_id,
@@ -160,6 +175,7 @@ def row_to_llm_request(r: RequestRow) -> LLMRequest:
         parent_response_id=r.parent_response_id,
         temperature=r.temperature,
         max_tokens=r.max_tokens,
+        response_schema=response_schema,
     )
 
 

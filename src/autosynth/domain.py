@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from pydantic import BaseModel
+
 from autosynth.schemas import Candidate, RubricCriterion
 
 
@@ -124,6 +126,13 @@ class DomainAdapter(ABC):
     def leakage_rules(self) -> list[str]:
         """Optional: domain-specific leakage rules surfaced to the verifier."""
         return []
+
+    def payload_model(self) -> type[BaseModel] | None:
+        """Optional Pydantic model tightening the challenger `payload` to a strict
+        schema. `validate_candidate()` still runs afterward; return ``None`` for a
+        free-form ``payload`` dict.
+        """
+        return None
 
     def verify(self, candidate: Candidate, solver_response: str) -> bool | None:
         """Programmatic correctness check for verifiable acceptance (mode="verifiable").
