@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.table import Table
 
 from autosynth._console import STDERR_CONSOLE
+from autosynth._intro import render_run_intro
 from autosynth.config import load_config, load_snapshot
 from autosynth.metaopt import MetaOptimizer
 from autosynth.runner import Runner
@@ -88,6 +89,8 @@ def run_cmd(
             console.print(f"[red]no run to resume at {existing}[/red] (check the config's output_dir)")
             raise typer.Exit(1)
     runner = Runner(cfg, run_id=run_id)
+    console.print(render_run_intro(cfg, run_id=runner.run_id, run_dir=runner.run_dir, resume=bool(resume)))
+    console.print("\n[dim]▸ running · press Ctrl-C to finish in-flight work, then exit[/dim]\n")
     summary = runner.run()
 
     table = Table(title=f"run {runner.run_id} summary")
