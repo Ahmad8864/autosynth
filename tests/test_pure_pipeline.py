@@ -56,7 +56,9 @@ def _cfg(*, max_rounds: int = 3, weak: int = 2, strong: int = 2, safety_enabled:
         output_dir="/tmp/out",
         max_examples=1,
         domain=DomainConfig(name="qa_from_documents", params={"source_dir": "/tmp"}),
-        loop=LoopConfig(max_rounds=max_rounds, weak_samples=weak, strong_samples=strong),
+        loop=LoopConfig(
+            max_rounds=max_rounds, weak_samples=weak, strong_samples=strong, short_circuit_strong=False
+        ),
         acceptance=AcceptanceConfig(forbid_weak_zero=False),
         orchestrator=ModelConfig(provider_model="mock/x"),
         challenger=ModelConfig(provider_model="mock/x"),

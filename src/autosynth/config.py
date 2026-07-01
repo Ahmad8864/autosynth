@@ -51,7 +51,7 @@ class ModelConfig(_StrictModel):
 
     provider_model: str = "mock/scripted"
     temperature: float | None = None
-    max_tokens: int = 2048
+    max_tokens: int = 8192
     top_p: float = 1.0
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -92,10 +92,10 @@ class AcceptanceConfig(_StrictModel):
 
 
 class LoopConfig(_StrictModel):
-    max_rounds: int = 5
-    weak_samples: int = 3
-    strong_samples: int = 3
-    short_circuit_strong: bool = False  # score the strong solver only when the weak gate passes (cost saver)
+    max_rounds: int = 20
+    weak_samples: int = 4
+    strong_samples: int = 4
+    short_circuit_strong: bool = True  # score the strong solver only when the weak gate passes (cost saver)
 
 
 class DomainConfig(_StrictModel):
