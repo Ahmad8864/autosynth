@@ -10,6 +10,19 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Fixed
 
+## [0.3.0] - 2026-07-01
+
+### Added
+
+- Startup banner: each `run` now prints a summary of the experiment (domain, per-role models, and key loop/acceptance settings) before generation begins, so you can confirm at a glance what a run is configured to do.
+- Strict structured outputs: the challenger and other fixed-shape roles now request schema-constrained responses from providers that support strict JSON mode, cutting malformed structured output.
+
+### Changed
+
+- Retuned defaults: `max_tokens` 2048 → 8192, `loop.max_rounds` 5 → 20, `loop.weak_samples` and `loop.strong_samples` 3 → 4, and `loop.short_circuit_strong` now defaults to `true` (the strong solver is scored only when the weak gate passes, to save cost). Set these explicitly in your config to keep the previous values.
+
+### Fixed
+
 ## [0.2.1] - 2026-06-29
 
 ### Added
@@ -73,7 +86,8 @@ Initial release.
 - LiteLLM-based real provider routing with per-role configuration.
 - CLI: `run`, `resume`, `status`, `inspect-run`, `export`, `metaopt`, `init-domain`.
 
-[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Ahmad8864/autosynth/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Ahmad8864/autosynth/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Ahmad8864/autosynth/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Ahmad8864/autosynth/compare/v0.1.0...v0.1.1
