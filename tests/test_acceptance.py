@@ -304,13 +304,13 @@ def test_resolve_policy_verifiable_requires_verify():
         def validate_candidate(self, candidate):
             raise NotImplementedError
 
-        def solver_prompt(self, candidate, solver_role):
+        def solver_prompt(self, candidate):
             raise NotImplementedError
 
         def quality_prompt(self, candidate):
             raise NotImplementedError
 
-        def judge_prompt(self, candidate, solver_response, solver_role):
+        def judge_prompt(self, candidate, solver_response):
             raise NotImplementedError
 
     with pytest.raises(ValueError, match="verify"):

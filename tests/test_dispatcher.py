@@ -112,7 +112,7 @@ def _disp_happy(role: str, messages):
     if canon == "quality":
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
     if canon == "judge":
-        if "[solver=weak]" in all_text:
+        if "SOLVER_RESPONSE: vague" in all_text:
             return json.dumps({"per_criterion": {"c1": 0.2, "c2": 0.1}, "total": 0.16})
         return json.dumps({"per_criterion": {"c1": 0.9, "c2": 0.85}, "total": 0.88})
     if canon == "weak":

@@ -23,9 +23,9 @@ def test_load_from_path(tmp_path: Path):
         "    def load_grounding(self): return []\n"
         "    def generation_prompt(self, *a, **k): return []\n"
         "    def validate_candidate(self, c): return []\n"
-        "    def solver_prompt(self, c, r): return []\n"
+        "    def solver_prompt(self, c): return []\n"
         "    def quality_prompt(self, c): return []\n"
-        "    def judge_prompt(self, c, r, s): return []\n"
+        "    def judge_prompt(self, c, r): return []\n"
     )
     cls = load_domain_from_path(f"{src}:Tiny")
     assert cls.__name__ == "Tiny"

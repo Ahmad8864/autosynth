@@ -42,8 +42,7 @@ class HarnessSpec(BaseModel):
     challenger_rules: list[str] = Field(default_factory=list)
     quality_rules: list[str] = Field(default_factory=list)
     judge_rules: list[str] = Field(default_factory=list)
-    weak_solver_rules: list[str] = Field(default_factory=list)
-    strong_solver_rules: list[str] = Field(default_factory=list)
+    solver_rules: list[str] = Field(default_factory=list)
     reflector_rules: list[str] = Field(default_factory=list)
 
     rubric_max_weight: int = 7
@@ -106,8 +105,7 @@ DEFAULT_HARNESS: HarnessSpec = make_harness(
         "per_criterion keys must match the rubric ids exactly.",
         "If the response is generic or boilerplate, lower scores accordingly even if it sounds plausible.",
     ],
-    weak_solver_rules=[],
-    strong_solver_rules=[],
+    solver_rules=[],
     reflector_rules=[
         "Be specific. Cite the failure mode from the previous round (e.g., 'context_leak', 'too_easy').",
     ],

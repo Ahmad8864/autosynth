@@ -31,8 +31,8 @@ def build_request(
     if role not in {"weak", "strong"}:
         raise ValueError(f"role must be 'weak' or 'strong', got {role!r}")
     h = harness or DEFAULT_HARNESS
-    messages = domain.solver_prompt(candidate, role)
-    messages = apply_harness(messages, h.rules_for(f"{role}_solver"))
+    messages = domain.solver_prompt(candidate)
+    messages = apply_harness(messages, h.rules_for("solver"))
     return LLMRequest(
         request_id=stable_id(item_id, round_n, role, attempt),
         item_id=item_id,

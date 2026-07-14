@@ -215,9 +215,9 @@ def _verifiable_math_handler(role: str, messages):
         )
     if "ROLE:QUALITY" in all_text:
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
-    if "ROLE:WEAK" in all_text or role == "weak":
+    if role == "weak":
         return "I'll guess. ANSWER: 41"
-    if "ROLE:STRONG" in all_text or role == "strong":
+    if role == "strong":
         return "6 * 7 = 42. ANSWER: 42"
     return "{}"
 
@@ -288,12 +288,12 @@ def _judge_loop_handler(role: str, messages):
             {"verdict": "accept", "grpo_suitability": "high", "reason": "clean gap", "suggestion": ""}
         )
     if "ROLE:JUDGE" in all_text or role == "judge":
-        total = 0.2 if "[solver=weak]" in all_text else 0.9
+        total = 0.2 if "SOLVER_RESPONSE: surface-level answer" in all_text else 0.9
         return json.dumps({"per_criterion": {"c1": total}, "total": total, "failure_modes": []})
-    if "ROLE:WEAK" in all_text or role == "weak":
-        return "weak answer"
-    if "ROLE:STRONG" in all_text or role == "strong":
-        return "strong, source-grounded answer"
+    if role == "weak":
+        return "surface-level answer"
+    if role == "strong":
+        return "detailed, source-grounded answer"
     return "{}"
 
 

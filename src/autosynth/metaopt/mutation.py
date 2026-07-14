@@ -17,7 +17,7 @@ from autosynth.harness import HarnessSpec, make_harness
 from autosynth.llm import LLMClient, LLMRequest
 from autosynth.utils import stable_id
 
-_RULE_ROLES = ("challenger", "quality", "judge", "weak_solver", "strong_solver", "reflector")
+_RULE_ROLES = ("challenger", "quality", "judge", "solver", "reflector")
 
 
 class Mutator:
@@ -35,10 +35,8 @@ class Mutator:
         '  "quality_rules_remove_indices": [ints],\n'
         '  "judge_rules_add": [strings],\n'
         '  "judge_rules_remove_indices": [ints],\n'
-        '  "weak_solver_rules_add": [strings],\n'
-        '  "weak_solver_rules_remove_indices": [ints],\n'
-        '  "strong_solver_rules_add": [strings],\n'
-        '  "strong_solver_rules_remove_indices": [ints],\n'
+        '  "solver_rules_add": [strings],\n'
+        '  "solver_rules_remove_indices": [ints],\n'
         '  "reflector_rules_add": [strings],\n'
         '  "reflector_rules_remove_indices": [ints],\n'
         '  "rubric_max_weight": int 1..10,\n'

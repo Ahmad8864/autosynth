@@ -91,7 +91,7 @@ class DomainAdapter(ABC):
 
     # ---- 4. solver prompt --------------------------------------------------
     @abstractmethod
-    def solver_prompt(self, candidate: Candidate, solver_role: str) -> list[dict[str, str]]:
+    def solver_prompt(self, candidate: Candidate) -> list[dict[str, str]]:
         """Build the prompt that asks a solver to attempt the task."""
 
     # ---- 5. verifier (quality) prompt --------------------------------------
@@ -105,7 +105,6 @@ class DomainAdapter(ABC):
         self,
         candidate: Candidate,
         solver_response: str,
-        solver_role: str,
     ) -> list[dict[str, str]]:
         """Prompt the judge to score solver_response against the rubric."""
 

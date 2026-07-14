@@ -49,9 +49,9 @@ class MyDomain(DomainAdapter):
             errs.append("rubric empty")
         return errs
 
-    def solver_prompt(self, candidate: Candidate, solver_role: str):
+    def solver_prompt(self, candidate: Candidate):
         return [
-            {"role": "system", "content": f"ROLE:{solver_role.upper()}_SOLVER. Attempt the task."},
+            {"role": "system", "content": "ROLE:SOLVER. Attempt the task."},
             {"role": "user", "content": json.dumps(candidate.payload)},
         ]
 
@@ -73,7 +73,7 @@ class MyDomain(DomainAdapter):
             },
         ]
 
-    def judge_prompt(self, candidate: Candidate, solver_response: str, solver_role: str):
+    def judge_prompt(self, candidate: Candidate, solver_response: str):
         return [
             {
                 "role": "system",
@@ -85,7 +85,6 @@ class MyDomain(DomainAdapter):
             {
                 "role": "user",
                 "content": (
-                    f"[solver={solver_role}] "
                     f"rubric={json.dumps([c.model_dump() for c in candidate.rubric])} "
                     f"reference={candidate.reference_output} response={solver_response}"
                 ),

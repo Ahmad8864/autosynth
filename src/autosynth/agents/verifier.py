@@ -70,7 +70,7 @@ def build_judge_request(
     produce distinct judge requests even if attempt indices collide.
     """
     h = harness or DEFAULT_HARNESS
-    messages = domain.judge_prompt(candidate, solver_response, solver_role)
+    messages = domain.judge_prompt(candidate, solver_response)
     messages = apply_harness(messages, h.rules_for("judge"))
     return LLMRequest(
         request_id=stable_id(item_id, round_n, "judge", solver_role, parent_response_id),

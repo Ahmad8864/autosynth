@@ -104,11 +104,10 @@ class MathWordProblems(DomainAdapter):
             errs.append("rubric is empty")
         return errs
 
-    def solver_prompt(self, candidate: Candidate, solver_role: str):
+    def solver_prompt(self, candidate: Candidate):
         sys = (
-            f"ROLE:{'WEAK' if solver_role == 'weak' else 'STRONG'}_SOLVER. "
-            "Solve the math word problem. Show your steps briefly, then provide the final numeric answer "
-            "on a line starting with 'ANSWER:'."
+            "ROLE:SOLVER. Solve the math word problem. Show your steps briefly, then provide the final "
+            "numeric answer on a line starting with 'ANSWER:'."
         )
         usr = f"PROBLEM: {candidate.payload['problem']}\n\nSolve it."
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
@@ -130,14 +129,13 @@ class MathWordProblems(DomainAdapter):
         )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
-    def judge_prompt(self, candidate: Candidate, solver_response: str, solver_role: str):
+    def judge_prompt(self, candidate: Candidate, solver_response: str):
         sys = (
             "ROLE:JUDGE. Score the solver against the rubric. The correctness criterion should reflect numeric "
             "equality with reference_output (allow trivial reformatting like '1/2' vs '0.5'). "
             "Return STRICT JSON: {per_criterion: {id: float in [0,1]}, total: float in [0,1], failure_modes: [strings]}."
         )
         usr = (
-            f"[solver={solver_role}]\n"
             f"PROBLEM: {candidate.payload.get('problem')}\n"
             f"REFERENCE_ANSWER: {candidate.reference_output}\n"
             f"RUBRIC: {json.dumps([c.model_dump() for c in candidate.rubric])}\n"

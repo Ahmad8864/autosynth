@@ -75,13 +75,16 @@ def test_boltzmann_skips_unaccepted_when_possible():
 
 
 def test_apply_mutation_adds_and_removes_rules():
-    parent = make_harness(challenger_rules=["keep-this", "drop-this"], quality_rules=["q1"])
+    parent = make_harness(
+        challenger_rules=["keep-this", "drop-this"], quality_rules=["q1"], solver_rules=["s1"]
+    )
     parent_id = parent.harness_id
     mutation = {
         "rationale": "test",
         "challenger_rules_add": ["new-rule"],
         "challenger_rules_remove_indices": [1],
         "quality_rules_add": ["q2"],
+        "solver_rules_add": ["s2"],
         "rubric_max_weight": 5,
         "require_self_test": True,
     }
@@ -90,6 +93,7 @@ def test_apply_mutation_adds_and_removes_rules():
     assert child.iteration == 3
     assert child.challenger_rules == ["keep-this", "new-rule"]
     assert child.quality_rules == ["q1", "q2"]
+    assert child.solver_rules == ["s1", "s2"]
     assert child.rubric_max_weight == 5
     assert child.require_self_test is True
     assert child.rationale == "test"

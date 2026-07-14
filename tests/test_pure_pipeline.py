@@ -606,13 +606,13 @@ class _VerifyDomain(DomainAdapter):
     def validate_candidate(self, candidate):
         return []
 
-    def solver_prompt(self, candidate, solver_role):
+    def solver_prompt(self, candidate):
         raise NotImplementedError
 
     def quality_prompt(self, candidate):
         raise NotImplementedError
 
-    def judge_prompt(self, candidate, solver_response, solver_role):
+    def judge_prompt(self, candidate, solver_response):
         raise NotImplementedError
 
     def verify(self, candidate, solver_response):

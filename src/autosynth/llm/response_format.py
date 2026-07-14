@@ -60,10 +60,8 @@ class MutatorOutput(BaseModel):
     quality_rules_remove_indices: list[int] = Field(default_factory=list)
     judge_rules_add: list[str] = Field(default_factory=list)
     judge_rules_remove_indices: list[int] = Field(default_factory=list)
-    weak_solver_rules_add: list[str] = Field(default_factory=list)
-    weak_solver_rules_remove_indices: list[int] = Field(default_factory=list)
-    strong_solver_rules_add: list[str] = Field(default_factory=list)
-    strong_solver_rules_remove_indices: list[int] = Field(default_factory=list)
+    solver_rules_add: list[str] = Field(default_factory=list)
+    solver_rules_remove_indices: list[int] = Field(default_factory=list)
     reflector_rules_add: list[str] = Field(default_factory=list)
     reflector_rules_remove_indices: list[int] = Field(default_factory=list)
     rubric_max_weight: int | None = None

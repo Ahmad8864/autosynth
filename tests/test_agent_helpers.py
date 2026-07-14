@@ -218,6 +218,35 @@ def test_solver_build_request_distinct_ids_per_attempt(domain, candidate):
     assert len(ids) == 3
 
 
+def test_solver_prompts_are_role_blind(domain, candidate):
+    h = make_harness(solver_rules=["Show your reasoning clearly."])
+    weak = solver.build_request(
+        item_id="i1",
+        round_n=1,
+        attempt=0,
+        model_key="m",
+        candidate=candidate,
+        role="weak",
+        domain=domain,
+        harness=h,
+    )
+    strong = solver.build_request(
+        item_id="i1",
+        round_n=1,
+        attempt=0,
+        model_key="m",
+        candidate=candidate,
+        role="strong",
+        domain=domain,
+        harness=h,
+    )
+
+    assert weak.messages == strong.messages
+    prompt_text = " ".join(m["content"] for m in weak.messages).lower()
+    assert "weak" not in prompt_text
+    assert "strong" not in prompt_text
+
+
 # ---------------------------------------------------------------------------
 # verifier (quality + judge)
 # ---------------------------------------------------------------------------
@@ -269,6 +298,25 @@ def test_judge_build_request_keyed_on_parent_id(domain, candidate):
     assert j1.request_id != j2.request_id
     assert j1.parent_response_id == "parent-A"
     assert j2.parent_response_id == "parent-B"
+
+
+def test_judge_prompts_are_role_blind(domain, candidate):
+    common = {
+        "item_id": "i1",
+        "round_n": 1,
+        "attempt": 0,
+        "model_key": "m",
+        "candidate": candidate,
+        "solver_response": "the same anonymized response",
+        "domain": domain,
+    }
+    weak = verifier.build_judge_request(**common, solver_role="weak", parent_response_id="parent-weak")
+    strong = verifier.build_judge_request(**common, solver_role="strong", parent_response_id="parent-strong")
+
+    assert weak.messages == strong.messages
+    prompt_text = " ".join(m["content"] for m in weak.messages).lower()
+    assert "solver=weak" not in prompt_text
+    assert "solver=strong" not in prompt_text
 
 
 def test_judge_parse_uses_weighted_average_when_total_missing(candidate):

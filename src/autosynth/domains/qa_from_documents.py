@@ -89,10 +89,10 @@ class QAFromDocuments(DomainAdapter):
         return errs
 
     # 4. solver prompt --------------------------------------------------------
-    def solver_prompt(self, candidate: Candidate, solver_role: str):
+    def solver_prompt(self, candidate: Candidate):
         sys = (
-            f"ROLE:{'WEAK' if solver_role == 'weak' else 'STRONG'}_SOLVER. "
-            "Answer the question grounded in the provided context. Be concrete; cite specific details from the context."
+            "ROLE:SOLVER. Answer the question grounded in the provided context. "
+            "Be concrete; cite specific details from the context."
         )
         usr = (
             f"QUESTION: {candidate.payload['question']}\n\n"
@@ -121,14 +121,13 @@ class QAFromDocuments(DomainAdapter):
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
     # 6. judge prompt ---------------------------------------------------------
-    def judge_prompt(self, candidate: Candidate, solver_response: str, solver_role: str):
+    def judge_prompt(self, candidate: Candidate, solver_response: str):
         sys = (
             "ROLE:JUDGE. Score the solver's response against the rubric. For each criterion, output a per_criterion "
             "score in [0,1]. Compute total as the weighted average normalized to [0,1]. Identify failure modes if any. "
             "Return STRICT JSON: {per_criterion: {id: float}, total: float, failure_modes: [strings]}."
         )
         usr = (
-            f"[solver={solver_role}]\n"
             f"QUESTION: {candidate.payload.get('question')}\n"
             f"CONTEXT: {candidate.payload.get('context', '')}\n"
             f"REFERENCE_OUTPUT: {candidate.reference_output}\n"

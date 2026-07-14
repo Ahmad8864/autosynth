@@ -65,12 +65,12 @@ def _happy_handler(role: str, messages):
     if "ROLE:QUALITY" in all_text:
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
     if "ROLE:JUDGE" in all_text or role == "judge":
-        if "[solver=weak]" in all_text:
+        if "vague answer" in all_text:
             return json.dumps({"per_criterion": {"c1": 0.2, "c2": 0.1}, "total": 0.16, "failure_modes": []})
         return json.dumps({"per_criterion": {"c1": 0.9, "c2": 0.85}, "total": 0.88, "failure_modes": []})
-    if role == "weak" or "ROLE:WEAK" in all_text:
+    if role == "weak":
         return "vague answer"
-    if role == "strong" or "ROLE:STRONG" in all_text:
+    if role == "strong":
         return "specific, source-grounded answer"
     return "{}"
 

@@ -8,6 +8,11 @@ def test_default_harness_has_seed_rules():
     assert DEFAULT_HARNESS.rubric_max_weight == 7
 
 
+def test_solver_rules_are_shared():
+    h = make_harness(solver_rules=["show work"])
+    assert h.rules_for("solver") == ["show work"]
+
+
 def test_apply_harness_appends_to_system_message():
     msgs = [
         {"role": "system", "content": "base instructions"},

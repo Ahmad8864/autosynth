@@ -36,8 +36,6 @@ _ROLE_TAGS = (
     ("reflector", "ROLE:REFLECTION"),
     ("quality", "ROLE:QUALITY"),
     ("judge", "ROLE:JUDGE"),
-    ("weak", "ROLE:WEAK"),
-    ("strong", "ROLE:STRONG"),
     ("meta_mutator", "ROLE:META_MUTATOR"),
 )
 
@@ -139,8 +137,7 @@ def _default_mock_handler(role: str, messages: list[Message]) -> str:
     if canon == "quality":
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
     if canon == "judge":
-        solver_tag = "weak" if "[solver=weak]" in all_text else "strong"
-        if solver_tag == "weak":
+        if "general AI topics" in all_text:
             return json.dumps(
                 {
                     "per_criterion": {"c1": 0.2, "c2": 0.0, "c3": 0.1},
@@ -209,7 +206,7 @@ def _metaopt_handler(role: str, messages: list[Message]) -> str:
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
     if canon == "judge":
         specific = "[SPECIFIC]" in all_text
-        if "[solver=weak]" in all_text:
+        if "generic attempt" in all_text:
             return json.dumps({"per_criterion": {"c1": 0.25, "c2": 0.10}, "total": 0.20, "failure_modes": []})
         return json.dumps(
             {
@@ -219,9 +216,9 @@ def _metaopt_handler(role: str, messages: list[Message]) -> str:
             }
         )
     if canon == "weak":
-        return "generic weak attempt"
+        return "generic attempt"
     if canon == "strong":
-        return "specific strong attempt"
+        return "source-specific attempt"
     return "{}"
 
 
