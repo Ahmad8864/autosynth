@@ -1,9 +1,4 @@
-"""LLMClient: provider routing, rate limiting, retries, cost accounting.
-
-Real models go through LiteLLM; ``mock/*`` model strings dispatch to the
-in-process mock registry. Per-(provider, model) RPM is enforced via a token
-bucket; retries use tenacity with exponential backoff.
-"""
+"""Provider routing, rate limiting, retries, and cost accounting."""
 
 from __future__ import annotations
 
@@ -28,12 +23,7 @@ from autosynth.llm.types import LLMRequest, Response
 
 
 def _is_retryable(exc: BaseException) -> bool:
-    """Default-retry, with known-deterministic LiteLLM classes opted out.
-
-    A predicate (not an allowlist) so when LiteLLM grows a new transient
-    error class we still retry it by default — only the deterministic
-    failures we've explicitly identified stop the retry loop.
-    """
+    """Retry unknown errors, excluding known deterministic failures."""
     try:
         import litellm
     except ImportError:
@@ -53,22 +43,14 @@ def _is_retryable(exc: BaseException) -> bool:
 
 
 class LLMConfig(BaseModel):
-    """Top-level LLM settings.
-
-    Sampling params (``temperature``, ``max_tokens``) live on each per-role
-    :class:`~autosynth.config.ModelConfig` and are carried on the
-    :class:`~autosynth.llm.types.LLMRequest`. The client does not impose a
-    fallback — when a request leaves a sampling param as ``None``, that param
-    is simply omitted and the provider's own default applies.
-    """
+    """Settings shared by all LLM calls in a run."""
 
     rate_limits: dict[str, RateLimitSpec] = Field(default_factory=dict)
     max_retries: int = 3
     request_timeout_s: int = 60
-    # Per-model price overrides: { "openai/gpt-4o-mini": [input_per_million, output_per_million] }
+    # Values are [input_per_million, output_per_million].
     prices: dict[str, list[float]] = Field(default_factory=dict)
-    # Per-model LiteLLM kwargs (api_base, api_version, api_key, etc.), keyed by
-    # model string. Applied as defaults under the explicit per-call kwargs.
+    # Defaults for provider-specific LiteLLM arguments, keyed by model.
     model_extras: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
@@ -81,8 +63,6 @@ class LLMClient:
         self._buckets_lock = threading.Lock()
         self._prices_registered = False
 
-    # ---- entry point ----------------------------------------------------
-
     def complete(self, req: LLMRequest) -> Response:
         bucket = self._limiter_for(req.model_key)
         if bucket is not None:
@@ -90,8 +70,6 @@ class LLMClient:
         if req.model_key.startswith("mock/"):
             return self._call_mock(req)
         return self._call_real(req)
-
-    # ---- rate limiting --------------------------------------------------
 
     def _limiter_for(self, model_key: str) -> TokenBucket | None:
         with self._buckets_lock:
@@ -115,8 +93,6 @@ class LLMClient:
                 return spec
         return None
 
-    # ---- mock dispatch --------------------------------------------------
-
     def _call_mock(self, req: LLMRequest) -> Response:
         t0 = time.monotonic()
         text = dispatch_mock(req.model_key, req.role, req.messages)
@@ -130,8 +106,6 @@ class LLMClient:
             cost_usd=0.0,
             duration_ms=elapsed_ms,
         )
-
-    # ---- real (LiteLLM) dispatch ---------------------------------------
 
     def _register_price_overrides(self, litellm: Any) -> None:
         if not self.cfg.prices:
@@ -148,7 +122,7 @@ class LLMClient:
             litellm.register_model(registry)
 
     def _call_real(self, req: LLMRequest) -> Response:
-        import litellm  # lazy import
+        import litellm
 
         if not self._prices_registered:
             self._register_price_overrides(litellm)

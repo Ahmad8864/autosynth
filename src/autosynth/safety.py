@@ -1,14 +1,4 @@
-"""Optional safety / PII filter hook.
-
-The default filter is permissive (no-op). Users can override the hook by
-providing either:
-
-  - An importable spec:  ``my_pkg.my_module:my_filter``
-  - A file path:         ``/abs/path/to/my_filter.py:my_filter``
-
-The file-path form mirrors ``autosynth.domain.load_domain_from_path`` so users
-can plug in DLP code without packaging it first.
-"""
+"""Optional safety and PII filtering hooks."""
 
 from __future__ import annotations
 
@@ -22,8 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-# Very rough PII heuristics — intentionally conservative; meant as a starting
-# point, not a compliance solution. Override with a real DLP tool in production.
+# These heuristics are a starting point, not a compliance check.
 _PII_PATTERNS = [
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "SSN"),
     (re.compile(r"\b(?:\d[ -]*?){13,19}\b"), "credit-card-like"),

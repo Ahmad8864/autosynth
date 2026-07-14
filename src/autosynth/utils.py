@@ -1,4 +1,4 @@
-"""Utility helpers: deterministic IDs, JSON extraction, path helpers, timestamps."""
+"""Shared ID, JSON, path, and timestamp helpers."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def stable_id(*parts: Any, length: int = 12) -> str:
 
 
 def utcnow() -> datetime:
-    """Timezone-aware UTC `now()` — use everywhere instead of `datetime.now()`."""
+    """Return the current time in UTC."""
     return datetime.now(timezone.utc)
 
 
@@ -34,12 +34,7 @@ def make_run_id(prefix: str, *seed_parts: Any) -> str:
 
 
 def extract_json(text: str) -> dict[str, Any]:
-    """Extract the first balanced JSON object from a string.
-
-    Robust to chatty preludes and trailing prose. Raises ValueError if no object
-    is found — a top-level array or scalar is rejected, not returned, so callers
-    keep the dict contract.
-    """
+    """Extract the first balanced JSON object, ignoring surrounding text."""
     if not text:
         raise ValueError("empty response")
     text = text.strip()
@@ -80,7 +75,7 @@ def extract_json(text: str) -> dict[str, Any]:
                     try:
                         return json.loads(text[s : i + 1])
                     except json.JSONDecodeError:
-                        break  # unbalanced/invalid; try the next '{'
+                        break
     raise ValueError(f"no JSON object found in response: {text[:200]!r}")
 
 

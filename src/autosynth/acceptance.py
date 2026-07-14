@@ -1,18 +1,4 @@
-"""Acceptance policies: turn solver scores into an accept/reject EvalReport.
-
-Two regimes from the paper:
-
-- :class:`ThresholdPolicy` (§3.1/3.2) — rubric-gap acceptance. An LLM judge
-  scores each rollout; accept on weak/strong thresholds + gap.
-- :class:`VerifiablePolicy` (§3.3) — count gate over programmatic correctness.
-  Each rollout is scored by the domain's ``verify()``; accept when the weak
-  solver mostly fails and the strong solver mostly succeeds.
-
-``requires_judge`` tells the pipeline how per-attempt scores are produced:
-``True`` dispatches a judge LLM request per attempt; ``False`` scores each
-attempt in-process via ``domain.verify()``. ``resolve_policy`` picks the policy
-from ``cfg.acceptance.mode`` (falling back to the domain's default).
-"""
+"""Acceptance policies for scored solver attempts."""
 
 from __future__ import annotations
 
@@ -31,12 +17,7 @@ from autosynth.schemas import EvalReport, QualityCheck, SolverScore
 
 @dataclass(frozen=True)
 class Decision:
-    """A round's accept/reject outcome plus optional next-round feedback.
-
-    Sync policies return ``Decision(report)`` and the pipeline runs the reflector
-    for feedback; the async judge policy supplies ``feedback`` directly (the
-    loop-judge's suggestion), so the pipeline skips the reflector.
-    """
+    """A round's outcome and, when available, feedback for the next round."""
 
     report: EvalReport
     feedback: tuple[str, ...] = ()
@@ -52,7 +33,7 @@ def _base_report(weak: Sequence[SolverScore], strong: Sequence[SolverScore]) -> 
         weak_avg=mean(weak_vals),
         weak_max=max(weak_vals),
         weak_min=min(weak_vals),
-        weak_std=pstdev(weak_vals),  # population std: 0.0 at n=1 (stdev would raise)
+        weak_std=pstdev(weak_vals),
         strong_avg=mean(strong_vals),
         strong_max=max(strong_vals),
         strong_min=min(strong_vals),
@@ -113,18 +94,7 @@ def evaluate(
 
 
 class AcceptancePolicy(ABC):
-    """Strategy that scores-and-decides a round's acceptance.
-
-    A policy implements exactly one decision path, selected by ``decides_async``:
-    synchronous policies override ``evaluate``; the async judge policy sets
-    ``decides_async=True`` and overrides ``decide`` (an LLM decides per round).
-
-    ``requires_judge``: True -> pipeline dispatches a rubric judge per attempt;
-    False -> pipeline scores each attempt via ``domain.verify()``.
-    ``weak_ceiling`` / ``strong_floor``: rates the reflector uses to bucket prior
-    rounds (weak above the ceiling = "too easy"; strong below the floor =
-    "failed_strong").
-    """
+    """Base strategy for scoring and accepting a round."""
 
     requires_judge: bool = True
     decides_async: bool = False
@@ -151,10 +121,7 @@ class AcceptancePolicy(ABC):
         raise NotImplementedError
 
     def weak_gate_passes(self, weak_scores: Sequence[SolverScore]) -> bool:
-        """Whether the weak side is acceptable on its own (weak appropriately fails).
-
-        Used by short-circuit strong evaluation: the strong solver only runs when
-        this returns True. Default True (always run strong)."""
+        """Return whether short-circuit evaluation should run the strong solver."""
         return True
 
 
@@ -176,13 +143,7 @@ class ThresholdPolicy(AcceptancePolicy):
 
 
 class VerifiablePolicy(AcceptancePolicy):
-    """Count gate over per-attempt correctness (mode="verifiable", paper §3.3).
-
-    Accept when at most ``verifiable_weak_max_correct`` weak rollouts and at
-    least ``verifiable_strong_min_correct`` strong rollouts are correct. A
-    rollout is correct when its (binary) ``total`` is 1.0; the gate reads
-    ``total`` rather than ``correct`` so it is robust when ``correct`` is absent.
-    """
+    """Count correct weak and strong attempts against configured limits."""
 
     requires_judge = False
 
@@ -223,19 +184,14 @@ class VerifiablePolicy(AcceptancePolicy):
 
 
 class JudgePolicy(AcceptancePolicy):
-    """Judge-decided acceptance (mode="judge", paper §3.2 legal loop-judge).
-
-    No fixed thresholds: after the rubric judge scores every rollout, a
-    loop-judge reads the weak/strong patterns and decides accept/improve,
-    supplying the next round's suggestion directly (so the reflector is skipped).
-    """
+    """Let a loop judge accept the round or request an improvement."""
 
     requires_judge = True
     decides_async = True
 
     def __init__(self, criteria: AcceptanceConfig):
         self.criteria = criteria
-        # Unused (the judge supplies its own feedback) but kept for the ABC.
+        # The reflector still reads these policy attributes.
         self.weak_ceiling = criteria.weak_avg_max
         self.strong_floor = criteria.strong_avg_min
 
@@ -250,7 +206,6 @@ class JudgePolicy(AcceptancePolicy):
         report.rejection_reasons = [
             f"loop-judge improve: {verdict.reason}" if verdict.reason else "loop-judge improve"
         ]
-        # Guarantee non-empty feedback so the next round is never guidance-less.
         suggestion = (
             verdict.suggestion.strip() or verdict.reason.strip() or "make the question more discriminating"
         )
@@ -258,12 +213,7 @@ class JudgePolicy(AcceptancePolicy):
 
 
 def resolve_policy(cfg: RunConfig, domain: DomainAdapter) -> AcceptancePolicy:
-    """Pick the acceptance policy from config + domain.
-
-    ``cfg.acceptance.mode`` wins; otherwise the domain's
-    ``default_acceptance_mode``. Verifiable mode requires the domain to
-    implement ``verify()`` and a well-formed count gate.
-    """
+    """Resolve the configured mode, falling back to the domain default."""
     mode = cfg.acceptance.mode or domain.default_acceptance_mode
     if mode == "rubric":
         return ThresholdPolicy(cfg.acceptance)

@@ -1,9 +1,4 @@
-"""Tests for the new event-sourced LLMClient (autosynth.llm).
-
-Covers: token-bucket math, rate-limit glob matching, mock dispatch
-preserves the legacy register_mock contract, cost accounting delegated
-to ``litellm.completion_cost``, retry on transient errors.
-"""
+"""LLM client routing, throttling, retries, and response formats."""
 
 from __future__ import annotations
 
@@ -32,9 +27,7 @@ from autosynth.llm.response_format import (
     response_format_for,
 )
 
-# ---------------------------------------------------------------------------
 # helpers
-# ---------------------------------------------------------------------------
 
 
 class FakeClock:
@@ -76,9 +69,7 @@ def _req(
     )
 
 
-# ---------------------------------------------------------------------------
 # TokenBucket math
-# ---------------------------------------------------------------------------
 
 
 def test_bucket_serves_burst_immediately():
@@ -88,16 +79,16 @@ def test_bucket_serves_burst_immediately():
     bucket.acquire()
     bucket.acquire()
     bucket.acquire()
-    assert sleep.calls == []  # no sleep within burst
+    assert sleep.calls == []
 
 
 def test_bucket_throttles_after_burst():
     clock = FakeClock()
     sleep = FakeSleep(clock)
     bucket = TokenBucket(rate_per_sec=2.0, burst=2, clock=clock, sleep=sleep)
-    bucket.acquire()  # burst 2 → 1
-    bucket.acquire()  # burst 1 → 0
-    bucket.acquire()  # must wait 0.5s for one refill
+    bucket.acquire()
+    bucket.acquire()
+    bucket.acquire()
     assert len(sleep.calls) == 1
     assert sleep.calls[0] == pytest.approx(0.5, rel=1e-6)
 
@@ -107,7 +98,7 @@ def test_bucket_refills_continuously():
     sleep = FakeSleep(clock)
     bucket = TokenBucket(rate_per_sec=1.0, burst=1, clock=clock, sleep=sleep)
     bucket.acquire()
-    clock.advance(2.0)  # 2 tokens accumulated but capped at burst=1
+    clock.advance(2.0)
     bucket.acquire()
     assert sleep.calls == []
 
@@ -119,9 +110,7 @@ def test_bucket_validates_positive_rate():
         TokenBucket(rate_per_sec=1, burst=0)
 
 
-# ---------------------------------------------------------------------------
 # Rate-limit glob matching
-# ---------------------------------------------------------------------------
 
 
 def test_rate_limit_exact_match_wins():
@@ -143,7 +132,6 @@ def test_rate_limit_glob_fallback():
     bucket = client._limiter_for("openai/gpt-4o")
     assert bucket is not None
     assert bucket.rate == pytest.approx(10.0)
-    # Other providers unaffected.
     assert client._limiter_for("anthropic/whatever") is None
 
 
@@ -153,9 +141,7 @@ def test_rate_limit_none_means_unlimited():
     assert client._limiter_for("mock/happy") is None
 
 
-# ---------------------------------------------------------------------------
 # Mock dispatch
-# ---------------------------------------------------------------------------
 
 
 def test_mock_dispatch_routes_to_registered_handler():
@@ -171,7 +157,6 @@ def test_mock_dispatch_routes_to_registered_handler():
 def test_mock_dispatch_falls_back_to_default_on_unknown_scenario():
     client = LLMClient()
     resp = client.complete(_req(model_key="mock/this_scenario_doesnt_exist", role="weak"))
-    # Default scripted handler returns the weak solver's canned text.
     assert "general AI topics" in resp.text or resp.text == "{}"
 
 
@@ -182,9 +167,7 @@ def test_mock_response_parses_json():
     assert parsed == {"ok": True}
 
 
-# ---------------------------------------------------------------------------
 # Real (LiteLLM) dispatch — mocked
-# ---------------------------------------------------------------------------
 
 
 class _FakeChoice:
@@ -240,8 +223,7 @@ def test_real_dispatch_computes_cost(monkeypatch):
     assert cost_calls == [fake]
     assert resp.cost_usd == pytest.approx(0.000045, rel=1e-6)
     assert calls[0]["model"] == "openai/gpt-4o-mini"
-    # Request didn't carry a temperature, so the client omits it and the
-    # provider's own default applies.
+    # Missing sampling values are left to the provider.
     assert "temperature" not in calls[0]
     assert "max_tokens" not in calls[0]
 
@@ -299,7 +281,6 @@ def test_price_override_registers_with_litellm(monkeypatch):
         messages=[{"role": "user", "content": "x"}],
     )
     client.complete(req)
-    # And again — registration should be a one-shot.
     client.complete(req)
     assert registered == [
         {
@@ -324,8 +305,7 @@ def test_real_dispatch_passes_json_mode_and_overrides(monkeypatch):
     monkeypatch.setattr(litellm, "completion", fake_completion)
 
     client = LLMClient()
-    # A role with no strict schema exercises the json_object fallback branch
-    # deterministically (no dependency on litellm's per-model schema support).
+    # A schema-less role always takes the plain JSON fallback.
     req = LLMRequest(
         request_id="r-2",
         item_id="i",
@@ -363,7 +343,6 @@ def test_real_dispatch_spreads_model_extras(monkeypatch):
                 "azure/my-deployment": {
                     "api_base": "https://example.openai.azure.com",
                     "api_version": "2024-02-01",
-                    # Should NOT override the explicit per-call value:
                     "temperature": 0.99,
                 },
                 "openai/gpt-4o": {"api_base": "should-not-leak"},
@@ -384,9 +363,8 @@ def test_real_dispatch_spreads_model_extras(monkeypatch):
     kwargs = captured[0]
     assert kwargs["api_base"] == "https://example.openai.azure.com"
     assert kwargs["api_version"] == "2024-02-01"
-    assert kwargs["temperature"] == 0.0  # explicit kwarg wins over extras
+    assert kwargs["temperature"] == 0.0
     assert kwargs["model"] == "azure/my-deployment"
-    # Unrelated model's extras must not bleed in.
     assert "should-not-leak" not in kwargs.values()
 
 
@@ -403,7 +381,7 @@ def test_real_dispatch_unset_model_extras_is_noop(monkeypatch):
     monkeypatch.setattr(litellm, "completion", fake_completion)
     monkeypatch.setattr(litellm, "completion_cost", lambda *, completion_response: 0.0)
 
-    client = LLMClient()  # no model_extras configured
+    client = LLMClient()
     req = LLMRequest(
         request_id="r-noextras",
         item_id="i",
@@ -413,7 +391,6 @@ def test_real_dispatch_unset_model_extras_is_noop(monkeypatch):
         messages=[{"role": "user", "content": "x"}],
     )
     client.complete(req)
-    # No sampling params on the request → none in kwargs. Provider defaults apply.
     assert set(captured[0].keys()) == {"model", "messages", "timeout"}
 
 
@@ -427,14 +404,15 @@ def test_real_dispatch_retries_on_transient_failure(monkeypatch):
         return _FakeResp("ok")
 
     import litellm
-
-    monkeypatch.setattr(litellm, "completion", flaky_completion)
-
-    client = LLMClient(LLMConfig(max_retries=4))
-    # Use a deterministic-but-fast wait by monkey-patching tenacity's sleep.
     import tenacity
 
-    monkeypatch.setattr(tenacity.nap, "sleep", lambda *_: None)
+    monkeypatch.setattr(litellm, "completion", flaky_completion)
+    monkeypatch.setattr(
+        "autosynth.llm.client.wait_exponential_jitter",
+        lambda **_kwargs: tenacity.wait_none(),
+    )
+
+    client = LLMClient(LLMConfig(max_retries=4))
 
     req = LLMRequest(
         request_id="r-3",
@@ -450,15 +428,20 @@ def test_real_dispatch_retries_on_transient_failure(monkeypatch):
 
 
 def test_real_dispatch_gives_up_after_max_retries(monkeypatch):
+    attempts = {"n": 0}
+
     def always_fails(**kwargs):
+        attempts["n"] += 1
         raise RuntimeError("permanent")
 
     import litellm
-
-    monkeypatch.setattr(litellm, "completion", always_fails)
     import tenacity
 
-    monkeypatch.setattr(tenacity.nap, "sleep", lambda *_: None)
+    monkeypatch.setattr(litellm, "completion", always_fails)
+    monkeypatch.setattr(
+        "autosynth.llm.client.wait_exponential_jitter",
+        lambda **_kwargs: tenacity.wait_none(),
+    )
 
     client = LLMClient(LLMConfig(max_retries=2))
     req = LLMRequest(
@@ -471,32 +454,26 @@ def test_real_dispatch_gives_up_after_max_retries(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="permanent"):
         client.complete(req)
+    assert attempts["n"] == 2
 
 
-# ---------------------------------------------------------------------------
 # Rate limiter integration with complete()
-# ---------------------------------------------------------------------------
 
 
 def test_complete_respects_rate_limit():
-    """complete() acquires from the model's bucket before dispatching. We inject
-    a fake-clock bucket so the throttle is asserted deterministically rather than
-    by sleeping ~1s in real time (the spec→bucket wiring is covered separately by
-    the _limiter_for tests above)."""
+    """Acquire a model's token bucket before dispatch."""
     register_mock("llm_test_slow", lambda role, msgs: "ok")
     clock = FakeClock()
     sleep = FakeSleep(clock)
     client = LLMClient()
-    # rpm=60 → 1 token/sec, burst=1: the second call must wait one full second.
+    # At one token per second, the second call waits for a refill.
     client._buckets["mock/llm_test_slow"] = TokenBucket(rate_per_sec=1.0, burst=1, clock=clock, sleep=sleep)
-    client.complete(_req(model_key="mock/llm_test_slow", request_id="a"))  # burst slot
-    client.complete(_req(model_key="mock/llm_test_slow", request_id="b"))  # waits for refill
+    client.complete(_req(model_key="mock/llm_test_slow", request_id="a"))
+    client.complete(_req(model_key="mock/llm_test_slow", request_id="b"))
     assert sleep.calls == [pytest.approx(1.0, rel=1e-6)]
 
 
-# ---------------------------------------------------------------------------
 # structured-outputs response_format gating
-# ---------------------------------------------------------------------------
 
 
 class _Litellm:
@@ -520,14 +497,13 @@ def test_response_format_uses_strict_schema_when_role_and_provider_support_it():
 def test_response_format_falls_back_to_json_object_when_unsupported():
     lite = _Litellm(supported=False)
     assert response_format_for(lite, _req(role="quality")) == {"type": "json_object"}
-    # Even judge/meta_mutator drop back to plain JSON mode on old providers.
+    # Old providers use plain JSON even for fixed-shape roles.
     assert response_format_for(lite, _req(role="judge")) == {"type": "json_object"}
     assert response_format_for(lite, _req(role="meta_mutator")) == {"type": "json_object"}
 
 
 def test_response_format_challenger_without_schema_stays_json_object():
-    # A challenger request with no attached response_schema (role alone carries
-    # no fixed shape) falls back to plain JSON mode.
+    # Challenger shape comes from its attached domain schema.
     lite = _Litellm(supported=True)
     assert response_format_for(lite, _req(role="challenger")) == {"type": "json_object"}
 
@@ -535,8 +511,7 @@ def test_response_format_challenger_without_schema_stays_json_object():
 def test_strict_compatible_classifies_open_map_schemas():
     from autosynth.domains.math_word_problems import MathProblemPayload
 
-    # Open-keyed dicts (judge per_criterion, generic challenger payload) are not
-    # strict-compatible; every fixed-shape schema is.
+    # Dynamic-key mappings are not strict-compatible.
     assert _strict_compatible(JudgeOutput) is False
     assert _strict_compatible(ChallengerEnvelope) is False
     assert _strict_compatible(QualityOutput) is True
@@ -547,10 +522,7 @@ def test_strict_compatible_classifies_open_map_schemas():
 
 
 def test_response_format_open_map_schema_degrades_to_json_object_even_when_supported():
-    # Schemas with an open map (judge per_criterion; the generic challenger
-    # envelope's free-form payload) are outside the provider strict subset and
-    # 400 on OpenAI/Azure, so the guard falls them back to json_object even when
-    # the provider reports schema support.
+    # Provider support does not make dynamic-key schemas strict-compatible.
     lite = _Litellm(supported=True)
     assert challenger_schema_for(None) is ChallengerEnvelope
     assert response_format_for(lite, _req(role="judge")) == {"type": "json_object"}
@@ -565,7 +537,6 @@ def test_response_format_challenger_uses_dynamic_schema_from_payload_model():
     lite = _Litellm(supported=True)
     schema = challenger_schema_for(MathProblemPayload)
     assert schema is not ChallengerEnvelope
-    # payload tightened to the domain model's required fields.
     fields = schema.model_fields["payload"].annotation
     assert fields is MathProblemPayload
     assert response_format_for(lite, _req(role="challenger", response_schema=schema)) is schema
@@ -579,8 +550,7 @@ def test_challenger_schema_for_is_cached():
 
 
 def test_response_format_explicit_request_schema_wins_over_role():
-    # An attached (strict-compatible) response_schema takes precedence over the
-    # role-based default.
+    # Attached schemas take precedence over role defaults.
     from autosynth.domains.math_word_problems import MathProblemPayload
 
     lite = _Litellm(supported=True)
@@ -593,8 +563,7 @@ def test_response_format_falls_back_when_support_check_raises():
 
     lite = _Litellm(supported=RuntimeError("old litellm"))
     assert response_format_for(lite, _req(role="quality")) == {"type": "json_object"}
-    # A strict-compatible challenger schema still degrades when the support probe
-    # itself raises (old litellm) — exercises the except path, not the guard.
+    # A failed capability probe falls back to plain JSON.
     assert response_format_for(
         lite, _req(role="challenger", response_schema=challenger_schema_for(MathProblemPayload))
     ) == {"type": "json_object"}

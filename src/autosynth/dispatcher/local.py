@@ -1,16 +1,4 @@
-"""Local (thread-pool) fulfillment strategy.
-
-Fire-and-forget: the dispatcher claims pending requests in chunks and this
-strategy submits each one to a persistent thread pool, returning as soon as
-the work is queued. Workers post responses (or failure rows) directly to
-the store and ping ``dispatcher.notify()`` so the main loop wakes on
-completion instead of waiting out the idle poll interval.
-
-This mirrors the :mod:`autosynth.dispatcher.batch` strategy's shape — the
-main loop drives polling either way — and lets ``in_flight_count`` reflect
-real transient state for the progress bar, budget checks, and the
-concurrency cap in :meth:`Dispatcher._dispatch_pending`.
-"""
+"""Thread-pool fulfillment for local, immediate requests."""
 
 from __future__ import annotations
 
@@ -27,11 +15,7 @@ if TYPE_CHECKING:
 
 
 def fulfill_local(requests: list[RequestRow], dispatcher: Dispatcher) -> None:
-    """Submit each request to the dispatcher's thread pool and return.
-
-    Workers run :func:`_one_request` independently; the main loop observes
-    completions via ``in_flight_count`` and the ``notify`` wake-up.
-    """
+    """Queue requests in the dispatcher's worker pool."""
     if not requests:
         return
     pool = dispatcher._executor()
@@ -40,8 +24,7 @@ def fulfill_local(requests: list[RequestRow], dispatcher: Dispatcher) -> None:
 
 
 def _one_request(req_row: RequestRow, dispatcher: Dispatcher) -> None:
-    # Top-level guard: without an ``as_completed`` collector at the call
-    # site, bugs in store writes or hydration would otherwise vanish.
+    # Surface worker errors even though no caller awaits the future.
     try:
         request = row_to_llm_request(req_row, dispatcher.domain)
         try:

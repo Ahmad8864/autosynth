@@ -1,14 +1,4 @@
-"""autosynth CLI.
-
-Commands:
-  autosynth run         --config configs/example.yaml
-  autosynth resume      RUN_DIR
-  autosynth metaopt     --config configs/metaopt.yaml
-  autosynth init-domain NAME --out my_domain.py
-  autosynth inspect-run RUN_DIR [--stuck]
-  autosynth status      RUN_DIR
-  autosynth export      --run RUN_DIR --format jsonl|hf
-"""
+"""Command-line interface for autosynth."""
 
 from __future__ import annotations
 
@@ -38,9 +28,7 @@ console = Console()
 
 
 def _configure_logging(verbose: bool) -> None:
-    # Route through the shared stderr console so loguru output and the
-    # dispatcher's live progress bar can coexist — rich's Live keeps the
-    # bar pinned at the bottom while log lines scroll above it.
+    # Sharing Rich's stderr console keeps logs above the live progress bar.
     logger.remove()
     logger.add(
         lambda msg: STDERR_CONSOLE.print(msg, end="", markup=False, highlight=False),
@@ -51,12 +39,7 @@ def _configure_logging(verbose: bool) -> None:
 
 
 def _open_run(run_dir: Path) -> tuple[Store, sqlite3.Row]:
-    """Open the run.db at ``run_dir`` and return (store, run_row).
-
-    Exits with code 1 if the database or its run row is missing. Returning
-    the row directly lets callers use ``row["run_id"]`` / ``row["status"]``
-    without re-querying or re-narrowing past ``Row | None``.
-    """
+    """Open a run database or exit with a user-facing error."""
     db = run_dir / "run.db"
     if not db.exists():
         console.print(f"[red]no run.db at {db}[/red]")
@@ -82,8 +65,7 @@ def run_cmd(
     if resume:
         run_id = resume
         cfg.resume = True
-        # Guard the footgun: --resume uses the config's output_dir to locate the
-        # run, so a mismatched config would silently seed a new, empty run instead.
+        # Refuse to turn a bad resume path into a new empty run.
         existing = Path(cfg.output_dir) / resume / "run.db"
         if not existing.exists():
             console.print(f"[red]no run to resume at {existing}[/red] (check the config's output_dir)")
@@ -226,7 +208,6 @@ def resume_cmd(
             raise typer.Exit(1)
         cfg = load_snapshot(snap)
 
-    # `run_dir` already includes the run_id segment; the Runner appends it again.
     cfg.output_dir = str(run_dir.parent)
     cfg.resume = True
     runner = Runner(cfg, run_id=run_dir.name)

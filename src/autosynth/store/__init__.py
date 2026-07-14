@@ -1,18 +1,4 @@
-"""SQLite-backed store for an autosynth run.
-
-One ``run.db`` per run. WAL mode, synchronous=NORMAL, foreign keys on.
-All write operations go through :py:meth:`Store.tx` which takes the write
-lock and a BEGIN IMMEDIATE transaction.
-
-The schema is the canonical record of a run — the database *is* the run.
-JSONL and HF exports are produced lazily from ``accepted`` rows via
-:py:meth:`Store.export_jsonl` / :py:meth:`Store.export_hf`.
-
-Layout:
-  - :mod:`autosynth.store.schema` — table DDL, status/state constants, JSON helpers
-  - :mod:`autosynth.store.types`  — ``RequestRow`` / ``ResponseRow`` DTOs
-  - :mod:`autosynth.store.dao`    — the ``Store`` class itself
-"""
+"""SQLite persistence for autosynth runs."""
 
 from __future__ import annotations
 

@@ -52,10 +52,7 @@ def parse_response(
     source_metadata: dict[str, Any] | None = None,
     rubric_max_weight: int = 7,
 ) -> Candidate:
-    """Parse a challenger response into a Candidate.
-
-    Raises ValueError if the response is not valid JSON.
-    """
+    """Parse a challenger response, raising ``ValueError`` for invalid JSON."""
     data = extract_json(text)
     payload = data.get("payload") or {}
     reference_output = data.get("reference_output")

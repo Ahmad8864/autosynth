@@ -24,9 +24,7 @@ from autosynth.metaopt import (
     boltzmann_select,
 )
 
-# ---------------------------------------------------------------------------
 # Boltzmann selection
-# ---------------------------------------------------------------------------
 
 
 def _record(score: float, hid: str = "h") -> HarnessRecord:
@@ -48,7 +46,7 @@ def test_boltzmann_selects_higher_at_low_temp():
     for _ in range(200):
         winner = boltzmann_select(pop, temperature=0.05, rng=rng)
         counts[winner.spec.harness_id] += 1
-    assert counts["high"] > counts["low"] * 5  # large preference at low T
+    assert counts["high"] > counts["low"] * 5
 
 
 def test_boltzmann_single_record_returns_it():
@@ -64,14 +62,11 @@ def test_boltzmann_skips_unaccepted_when_possible():
     ]
     rng = random.Random(0)
     for _ in range(20):
-        # only the accepted one is eligible
         winner = boltzmann_select(pop, 0.1, rng)
         assert winner.spec.challenger_rules == ["b"]
 
 
-# ---------------------------------------------------------------------------
 # apply_mutation
-# ---------------------------------------------------------------------------
 
 
 def test_apply_mutation_adds_and_removes_rules():
@@ -101,18 +96,18 @@ def test_apply_mutation_adds_and_removes_rules():
 
 def test_apply_mutation_ignores_garbage_safely():
     parent = make_harness(challenger_rules=["a"])
-    # All malformed; the loop must NOT crash.
+    # Malformed edits are ignored.
     mutation = {
         "challenger_rules_add": ["", None, "ok"],
-        "challenger_rules_remove_indices": ["not-int", 99, -1],  # out of range / wrong type
+        "challenger_rules_remove_indices": ["not-int", 99, -1],
         "rubric_max_weight": "huge",
-        "require_self_test": "yes",  # not a bool
+        "require_self_test": "yes",
     }
     child = apply_mutation(parent, mutation, iteration=1)
     assert "a" in child.challenger_rules
     assert "ok" in child.challenger_rules
-    assert child.rubric_max_weight == 7  # unchanged
-    assert child.require_self_test is False  # unchanged
+    assert child.rubric_max_weight == 7
+    assert child.require_self_test is False
 
 
 def test_apply_mutation_noop_yields_same_fingerprint():
@@ -121,9 +116,7 @@ def test_apply_mutation_noop_yields_same_fingerprint():
     assert child.fingerprint() == parent.fingerprint()
 
 
-# ---------------------------------------------------------------------------
 # End-to-end mocked meta-opt loop
-# ---------------------------------------------------------------------------
 
 
 def _make_run_cfg(sample_docs_dir: Path, output_dir: Path, scenario: str = "metaopt") -> RunConfig:
@@ -151,7 +144,6 @@ def _make_run_cfg(sample_docs_dir: Path, output_dir: Path, scenario: str = "meta
 
 
 def test_metaopt_loop_runs_end_to_end(tmp_path: Path):
-    # Need at least train+val grounding items; create 2 docs.
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.md").write_text("# A\nDoc A talks about topic A in depth, with specific quantitative claims.")
@@ -163,9 +155,7 @@ def test_metaopt_loop_runs_end_to_end(tmp_path: Path):
 
     assert summary["iterations"] == 2
     assert summary["population_size"] >= 1
-    # Best harness must be accepted (always true since seed is accepted).
     assert summary["best_harness_id"]
-    # Output layout
     root = Path(summary["output_dir"])
     assert (root / "config.snapshot.yaml").exists()
     assert (root / "population.json").exists()
@@ -177,9 +167,7 @@ def test_metaopt_loop_runs_end_to_end(tmp_path: Path):
 
 
 def test_metaopt_accepts_improving_mutation(tmp_path: Path):
-    """With the 'metaopt' mock, adding the marker rule lifts the strong score,
-    so the child's val rate exceeds the seed's val mean and the mutation is
-    accepted on the val-only gate."""
+    """A mock mutation that improves validation should be accepted."""
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "a.md").write_text("# A\nDoc A.")
@@ -191,17 +179,14 @@ def test_metaopt_accepts_improving_mutation(tmp_path: Path):
     opt = MetaOptimizer(cfg, rng_seed=1)
     summary = opt.run()
 
-    # Best should be the child (the marker rule was added).
     pop = [
         HarnessRecord.model_validate(r)
         for r in json.loads((Path(summary["output_dir"]) / "population.json").read_text())
     ]
     accepted_children = [r for r in pop if r.accepted and r.spec.parent_id is not None]
     assert accepted_children, f"no mutation was accepted; pop={[r.model_dump() for r in pop]}"
-    # The accepted child must contain the marker rule the mock mutator proposed.
     assert any("Target a quantitative" in r for r in accepted_children[0].spec.challenger_rules)
-    # The seed (parent) was re-evaluated on val this iteration, so it accumulated
-    # a second val sample beyond its initial one.
+    # Parent re-evaluation adds another validation sample.
     seed = next(r for r in pop if r.spec.parent_id is None)
     assert len(seed.val_scores) >= 2
 

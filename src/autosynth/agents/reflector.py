@@ -1,9 +1,4 @@
-"""Reflector / RecipeUpdater.
-
-Reads the prior rounds for an item and emits a small list of *targeted*
-feedback bullets for the next challenger attempt, plus a hint toward a
-different angle. This is the "updated recipe" from the paper.
-"""
+"""Turn failed rounds into feedback for the next challenger attempt."""
 
 from __future__ import annotations
 
@@ -66,11 +61,7 @@ def build_request(
     strong_floor: float,
     harness: HarnessSpec | None = None,
 ) -> LLMRequest:
-    """Build the reflector request for an item entering round_n (round_n >= 2).
-
-    ``weak_ceiling`` / ``strong_floor`` come from the active acceptance policy
-    and bucket prior rounds into too-easy / failed-strong feedback.
-    """
+    """Build feedback for an item entering round ``round_n``."""
     h = harness or DEFAULT_HARNESS
     summary = _summarize_prior_rounds(prior_rounds, weak_ceiling, strong_floor)
     messages = [

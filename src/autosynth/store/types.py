@@ -1,9 +1,4 @@
-"""Row DTOs for the store DAO.
-
-The only DAO outputs that aren't bare ``sqlite3.Row``. They mirror the
-request/response tables exactly; conversion to/from them is local to the DAO
-and to the dispatcher's hydration layer.
-"""
+"""Typed request and response rows returned by the store."""
 
 from __future__ import annotations
 

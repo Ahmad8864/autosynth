@@ -1,10 +1,4 @@
-"""Runner: thin driver that wires Store + Dispatcher + Pipeline.
-
-It opens or creates a ``run.db`` under ``output_dir/<run_id>/``, seeds
-PENDING items from the domain (unless resuming), builds the LLMClient and
-Dispatcher, then calls ``dispatcher.run()``. Resume is "open the same
-run.db with ``cfg.resume=True``".
-"""
+"""Wire configuration, storage, dispatch, and pipeline state into a run."""
 
 from __future__ import annotations
 
@@ -43,8 +37,6 @@ class Runner:
         self.cfg = cfg
         self.harness = harness or DEFAULT_HARNESS
         self.source_id_filter = source_id_filter
-        # Cache the JSON-mode dump once; it's needed for the run id, the
-        # snapshot, and the run row.
         self._cfg_json = cfg.model_dump(mode="json")
         self.run_id = run_id or cfg.run_id or make_run_id("run", cfg.model_dump_json())
 
@@ -56,10 +48,7 @@ class Runner:
         self.llm = LLMClient(_build_llm_config(cfg))
 
     def run(self) -> RunSummary:
-        # Close the store on the way out so callers that create many Runners
-        # (e.g. meta-opt evaluates a fresh Runner per harness) don't leak a
-        # SQLite connection + WAL files each time. The dispatcher shares this
-        # store instance and never closes it.
+        # Meta-optimization creates many runners, so each run must close its DB.
         try:
             write_yaml_snapshot(self.run_dir / "config.snapshot.yaml", self.cfg)
             self._ensure_run_row()
@@ -91,11 +80,7 @@ class Runner:
             self.store.close()
 
     def _fulfillment_strategy(self):
-        """Pick the dispatcher's fulfill + poll hooks from ``dispatcher.mode``.
-
-        ``local`` (default) streams over HTTP; ``batch`` submits to a provider
-        batch API (see :meth:`_batch_provider`).
-        """
+        """Select local or batch fulfillment hooks."""
         if self.cfg.dispatcher.mode != "batch":
             return fulfill_local, None
         provider = self._batch_provider()
@@ -106,9 +91,7 @@ class Runner:
         return make_fulfill_batch(provider), poll_in_flight
 
     def _batch_provider(self) -> BatchProvider:
-        """Build the batch provider named by ``dispatcher.batch_provider``:
-        ``mock`` (in-process, offline), ``anthropic`` (native Message Batches),
-        else LiteLLM's OpenAI-style batch API for that provider."""
+        """Build the configured batch provider."""
         name = self.cfg.dispatcher.batch_provider
         if name == "mock":
             return MockBatchProvider(self.llm)
@@ -120,8 +103,7 @@ class Runner:
         )
 
     def close(self) -> None:
-        """Close the run's store connection (idempotent). Use when a Runner is
-        created but ``run()`` is never called."""
+        """Close the store connection. Safe to call more than once."""
         self.store.close()
 
     def _ensure_run_row(self) -> None:
@@ -152,12 +134,7 @@ class Runner:
 
 
 def _build_llm_config(cfg: RunConfig) -> LLMConfig:
-    """Derive an LLMConfig from the existing RunConfig fields.
-
-    Sampling params (temperature, max_tokens) are carried per-call on the
-    LLMRequest itself, sourced from each role's ModelConfig — there's no
-    global fallback at this layer.
-    """
+    """Build client-level settings from the run configuration."""
     return LLMConfig(
         max_retries=cfg.max_retries,
         request_timeout_s=cfg.request_timeout_s,
@@ -167,12 +144,7 @@ def _build_llm_config(cfg: RunConfig) -> LLMConfig:
 
 
 def _collect_model_extras(cfg: RunConfig) -> dict[str, dict]:
-    """Group ``ModelConfig.extra`` from every role by ``provider_model``.
-
-    If two roles target the same provider_model with overlapping keys, later
-    roles in the iteration order win — same-key conflicts are a config bug
-    that's usually clearer when they appear in YAML side-by-side.
-    """
+    """Group per-role provider options by model name."""
     roles: list[ModelConfig | None] = [
         cfg.orchestrator,
         cfg.challenger,

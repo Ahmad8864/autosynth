@@ -13,12 +13,10 @@ from autosynth.harness import HarnessSpec
 class HarnessRecord(BaseModel):
     spec: HarnessSpec
     train_score: float = 0.0
-    # All validation scores for this harness. The paper accumulates re-evals
-    # whenever an accepted candidate is sampled as a parent and compares the
-    # *mean* — so the accept gate isn't decided by a single noisy draw.
+    # Average re-evaluations to reduce noise in the acceptance gate.
     val_scores: list[float] = Field(default_factory=list)
-    val_score: float | None = None  # most recent val score (reporting only)
-    accepted: bool = True  # seed is always accepted
+    val_score: float | None = None
+    accepted: bool = True
     parent_accepted_id: str | None = None
 
     @property

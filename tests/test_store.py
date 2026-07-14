@@ -1,9 +1,4 @@
-"""Tests for the SQLite Store.
-
-Covers the schema, transactional invariants (claim_pending atomicity under
-threads), round materialization timing, the resume normalization table
-from MIGRATION_PLAN.md §4.2, and JSONL export.
-"""
+"""SQLite schema, transactions, resume handling, and exports."""
 
 from __future__ import annotations
 
@@ -28,9 +23,7 @@ from autosynth.store import (
 )
 from autosynth.store.schema import _SCHEMA_SQL
 
-# ---------------------------------------------------------------------------
 # fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -64,9 +57,7 @@ def _request(item_id: str, *, request_id: str, role: str = "weak", round_n: int 
     }
 
 
-# ---------------------------------------------------------------------------
 # schema
-# ---------------------------------------------------------------------------
 
 
 def test_user_version_set(store: Store):
@@ -100,9 +91,7 @@ def test_unsupported_version_raises(tmp_path: Path):
         Store(tmp_path / "x.db")
 
 
-# ---------------------------------------------------------------------------
 # runs + items + rounds
-# ---------------------------------------------------------------------------
 
 
 def test_create_and_get_run(store: Store):
@@ -149,20 +138,17 @@ def test_update_item_rejection_reasons(store: Store):
 
 def test_round_materialization_lifecycle(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_CANDIDATE")
-    # 1. insert with candidate only
     store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
     row = store.get_round(iid, 1)
     assert row is not None
     assert row["candidate_blob"] is not None
     assert row["quality_blob"] is None
     assert row["accepted"] == 0
-    # 2. attach quality
     store.upsert_round(item_id=iid, round_n=1, quality=QualityCheck(passed=True))
     row = store.get_round(iid, 1)
     assert row is not None
     assert json.loads(row["quality_blob"])["passed"] is True
-    assert row["candidate_blob"] is not None  # not overwritten
-    # 3. attach eval + finalize accepted
+    assert row["candidate_blob"] is not None
     store.upsert_round(item_id=iid, round_n=1, evaluation=EvalReport(accepted=True, gap=0.5))
     store.finalize_round(iid, 1, accepted=True)
     row = store.get_round(iid, 1)
@@ -181,9 +167,7 @@ def test_items_terminal_counts(store: Store):
     assert counts == {"ACCEPTED": 2, "REJECTED": 1, "NEED_SCORES": 1}
 
 
-# ---------------------------------------------------------------------------
 # requests + responses
-# ---------------------------------------------------------------------------
 
 
 def test_insert_requests_and_pending_count(store: Store):
@@ -196,7 +180,7 @@ def test_insert_requests_and_pending_count(store: Store):
 def test_insert_requests_idempotent_on_request_id(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
-    store.insert_requests([_request(iid, request_id="q1")])  # duplicate
+    store.insert_requests([_request(iid, request_id="q1")])
     assert store.pending_count("r1") == 1
 
 
@@ -228,8 +212,8 @@ def test_claim_pending_atomic_under_threads(store: Store):
     for t in threads:
         t.join()
 
-    assert len(claimed_ids) == 50  # exactly the 50 we inserted
-    assert len(set(claimed_ids)) == 50  # no duplicates
+    assert len(claimed_ids) == 50
+    assert len(set(claimed_ids)) == 50
     assert store.pending_count("r1") == 0
     assert store.in_flight_count("r1") == 50
 
@@ -252,7 +236,7 @@ def test_insert_response_idempotent(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_QUALITY")
     store.insert_requests([_request(iid, request_id="q1")])
     store.insert_response(request_id="q1", model="m", text="t", cost_usd=0.01)
-    store.insert_response(request_id="q1", model="m", text="t-again", cost_usd=0.99)  # ignored
+    store.insert_response(request_id="q1", model="m", text="t-again", cost_usd=0.99)
     resp = store.get_response("q1")
     assert resp is not None and resp.text == "t"
     assert store.cost_so_far("r1") == pytest.approx(0.01)
@@ -261,16 +245,14 @@ def test_insert_response_idempotent(store: Store):
 def test_pending_request_ids_for_item(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1"), _request(iid, request_id="q2")])
-    store.claim_pending(1)  # q1 -> in_flight, still counts as outstanding
+    store.claim_pending(1)
     store.insert_response(request_id="q1", model="m", text="t")
     ids = store.pending_request_ids_for_item(iid)
-    assert set(ids) == {"q2"}  # q1 is done; q2 still pending
+    assert set(ids) == {"q2"}
 
 
 def test_mark_request_failed_requeues_below_cap(store: Store):
-    """Within-run retries: under the cap, the request goes back to PENDING
-    so the dispatcher loop picks it up on the next tick. completed_at stays
-    null because the request isn't done — it's just paused between attempts."""
+    """Failures below the cap return to pending without completing."""
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
     store.claim_pending(1)
@@ -282,8 +264,7 @@ def test_mark_request_failed_requeues_below_cap(store: Store):
 
 
 def test_mark_request_failed_terminates_at_cap(store: Store):
-    """At the cap, the request transitions to FAILED with completed_at set;
-    the owning item then surfaces through unrecoverable_items with the error."""
+    """A request at the cap becomes failed and marks its item unrecoverable."""
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
     store.claim_pending(1)
@@ -298,15 +279,12 @@ def test_mark_request_failed_terminates_at_cap(store: Store):
     ]
 
 
-# ---------------------------------------------------------------------------
 # solver scores
-# ---------------------------------------------------------------------------
 
 
 def test_insert_score_references_two_responses(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
-    # Solver + judge response rows
     store.insert_requests([_request(iid, request_id="sol1"), _request(iid, request_id="jud1")])
     store.claim_pending(2)
     store.insert_response(request_id="sol1", model="m", text="weak attempt")
@@ -362,7 +340,7 @@ def test_score_persists_correct(store: Store):
             total=1.0 if correct else 0.0,
             correct=correct,
         )
-        # No judge in verifiable mode: judge_response_id self-references the solver response.
+        # Direct verification has no separate judge response.
         store.insert_score(
             item_id=iid, round_n=1, score=score, solver_response_id="sol0", judge_response_id="sol0"
         )
@@ -377,7 +355,7 @@ def test_migration_v1_to_v2_adds_correct(tmp_path: Path):
     db = tmp_path / "v1.db"
     conn = sqlite3.connect(db)
     conn.executescript(
-        "CREATE TABLE items (item_id TEXT PRIMARY KEY);"  # later migrations ALTER items
+        "CREATE TABLE items (item_id TEXT PRIMARY KEY);"
         "CREATE TABLE solver_scores (score_id TEXT PRIMARY KEY, total REAL NOT NULL);"
         "INSERT INTO solver_scores (score_id, total) VALUES ('old', 0.5);"
     )
@@ -385,17 +363,17 @@ def test_migration_v1_to_v2_adds_correct(tmp_path: Path):
     conn.commit()
     conn.close()
 
-    store = Store(db)  # _migrate runs 1 -> 2
+    store = Store(db)
     try:
         cols = {r[1] for r in store.conn.execute("PRAGMA table_info(solver_scores)")}
         assert "correct" in cols
         assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         row = store.conn.execute("SELECT total, correct FROM solver_scores WHERE score_id='old'").fetchone()
         assert row["total"] == pytest.approx(0.5)
-        assert row["correct"] is None  # old rows default to NULL
+        assert row["correct"] is None
     finally:
         store.close()
-    Store(db).close()  # reopening at v2 must not re-run the ALTER
+    Store(db).close()
 
 
 def test_migration_v2_to_v3_adds_consumed_seq(tmp_path: Path):
@@ -408,7 +386,7 @@ def test_migration_v2_to_v3_adds_consumed_seq(tmp_path: Path):
     assert "consumed_seq" not in {r[1] for r in conn.execute("PRAGMA table_info(items)")}
     conn.close()
 
-    store = Store(db)  # _migrate runs 2 -> 3
+    store = Store(db)
     try:
         assert "consumed_seq" in {r[1] for r in store.conn.execute("PRAGMA table_info(items)")}
         assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
@@ -417,8 +395,7 @@ def test_migration_v2_to_v3_adds_consumed_seq(tmp_path: Path):
 
 
 def test_hydrate_responses_uses_rowid_watermark(store: Store):
-    """hydrate_responses returns responses with rowid > since_seq; the max seq is
-    the new watermark, past which nothing re-delivers."""
+    """Hydration returns only responses beyond the rowid watermark."""
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id=f"q{i}") for i in range(2)])
     store.claim_pending(2)
@@ -428,12 +405,11 @@ def test_hydrate_responses_uses_rowid_watermark(store: Store):
     rows = store.hydrate_responses(iid, 0)
     assert {r["request_id"] for r in rows} == {"q0", "q1"}
     max_seq = max(r["seq"] for r in rows)
-    assert store.hydrate_responses(iid, max_seq) == []  # all consumed → nothing past the watermark
+    assert store.hydrate_responses(iid, max_seq) == []
 
 
 def _schema_fingerprint(conn: sqlite3.Connection) -> dict:
-    """Backend-level schema: per table, its columns and indexes (names elided so
-    auto-index naming doesn't matter — only shape and constraints are compared)."""
+    """Return each table's columns and indexes without generated index names."""
     tables = sorted(
         r[0]
         for r in conn.execute(
@@ -454,14 +430,7 @@ def _schema_fingerprint(conn: sqlite3.Connection) -> dict:
 
 
 def test_fresh_and_migrated_schema_converge(tmp_path: Path):
-    """A fresh install (_SCHEMA_SQL) and an old db walked through _MIGRATIONS must
-    end at identical schema — the guard against the two sources of truth drifting
-    (e.g. a column added to one but not the other).
-
-    The v1 baseline is the current schema minus every later delta (v2 added
-    solver_scores.correct; v3 added items.consumed_seq). When a later migration
-    lands, strip its column here too.
-    """
+    """Fresh and fully migrated databases must have identical schemas."""
     fresh = Store(tmp_path / "fresh.db")
     try:
         expected = _schema_fingerprint(fresh.conn)
@@ -478,9 +447,9 @@ def test_fresh_and_migrated_schema_converge(tmp_path: Path):
     score_cols = {r[1] for r in conn.execute("PRAGMA table_info(solver_scores)")}
     item_cols = {r[1] for r in conn.execute("PRAGMA table_info(items)")}
     conn.close()
-    assert "correct" not in score_cols and "consumed_seq" not in item_cols  # baseline is pre-v2/v3
+    assert "correct" not in score_cols and "consumed_seq" not in item_cols
 
-    migrated = Store(db)  # _migrate walks 1 -> 2 -> 3
+    migrated = Store(db)
     try:
         assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert _schema_fingerprint(migrated.conn) == expected
@@ -488,9 +457,7 @@ def test_fresh_and_migrated_schema_converge(tmp_path: Path):
         migrated.close()
 
 
-# ---------------------------------------------------------------------------
 # accepted + export
-# ---------------------------------------------------------------------------
 
 
 def test_accepted_and_export_jsonl(store: Store, tmp_path: Path):
@@ -514,20 +481,18 @@ def test_insert_accepted_idempotent_on_round(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_QUALITY")
     store.upsert_round(item_id=iid, round_n=1, candidate=_candidate())
     a = store.insert_accepted(item_id=iid, round_n=1, payload={"x": 1})
-    b = store.insert_accepted(item_id=iid, round_n=1, payload={"x": 2})  # ignored
+    b = store.insert_accepted(item_id=iid, round_n=1, payload={"x": 2})
     assert a == b
     assert store.count_accepted("r1") == 1
 
 
-# ---------------------------------------------------------------------------
 # resume normalization (§4.2)
-# ---------------------------------------------------------------------------
 
 
 def test_resume_in_flight_local_to_pending(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
-    store.claim_pending(1)  # local: batch_id stays NULL
+    store.claim_pending(1)
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
     assert counts["in_flight_to_pending"] == 1
     req = store.get_request("q1")
@@ -549,7 +514,7 @@ def test_resume_in_flight_batch_unchanged(store: Store):
 def test_resume_done_without_response_reverts_to_pending(store: Store):
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
-    # Manually put it in 'done' without a response row (simulate crash window).
+    # Simulate a crash between marking done and writing the response.
     with store.tx() as cur:
         cur.execute("UPDATE requests SET status=? WHERE request_id='q1'", (REQ_DONE,))
     counts = store.normalize_for_resume(run_id="r1", max_request_failures=3)
@@ -559,13 +524,11 @@ def test_resume_done_without_response_reverts_to_pending(store: Store):
 
 
 def test_resume_failed_under_cap_reverts_to_pending(store: Store):
-    """A request that crashed in the FAILED state (e.g. process killed mid-write)
-    is reset to PENDING on resume so the dispatcher can pick it up again."""
+    """Resume requeues an under-cap request left in the failed state."""
     iid = store.insert_item(run_id="r1", source_id="s1", domain="qa", state="NEED_SCORES")
     store.insert_requests([_request(iid, request_id="q1")])
     store.claim_pending(1)
-    # Force the FAILED state directly: in-run, mark_request_failed would
-    # requeue under-cap requests itself.
+    # Bypass the normal in-run requeue to reproduce the crash state.
     with store.tx() as cur:
         cur.execute(
             "UPDATE requests SET status=?, failure_count=1 WHERE request_id='q1'",

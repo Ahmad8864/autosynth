@@ -1,8 +1,4 @@
-"""End-to-end mocked integration tests against the Runner.
-
-Replaces the legacy ``test_full_loop.py``; same assertions, new architecture.
-The full pipeline runs against the in-process mock provider — zero API keys.
-"""
+"""End-to-end runner tests using in-process providers."""
 
 from __future__ import annotations
 
@@ -55,12 +51,12 @@ def test_happy_path_accepts(sample_docs: Path, output_dir: Path):
 
 
 def test_runner_closes_store_after_run(sample_docs: Path, output_dir: Path):
-    """The store connection is closed on the way out (no leak across many Runners)."""
+    """A completed runner closes its store connection."""
     runner = Runner(_cfg(sample_docs, output_dir, "happy"))
     runner.run()
     with pytest.raises(sqlite3.ProgrammingError):
         runner.store.conn.execute("SELECT 1")
-    runner.close()  # idempotent
+    runner.close()
 
 
 def test_reject_path_exhausts_rounds(sample_docs: Path, output_dir: Path):
@@ -96,14 +92,34 @@ def test_config_snapshot_written(sample_docs: Path, output_dir: Path):
     assert "qa_from_documents" in snap.read_text()
 
 
-def test_resume_skips_completed(sample_docs: Path, output_dir: Path):
-    """Second Runner with same run_id finds all items already terminal — no work."""
+def test_resume_skips_completed(sample_docs: Path, output_dir: Path, monkeypatch):
+    """Reopening a completed run should do no work."""
     cfg = _cfg(sample_docs, output_dir, "happy")
     Runner(cfg).run()
-    # Reuse the same run dir and id.
+
+    db = output_dir / "test-run" / "run.db"
+    store = Store(db)
+    before = tuple(
+        store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in ("requests", "responses", "rounds", "accepted")
+    )
+    store.close()
+
+    def unexpected_completion(*_args, **_kwargs):
+        raise AssertionError("a completed run called the provider during resume")
+
+    monkeypatch.setattr("autosynth.llm.client.LLMClient.complete", unexpected_completion)
     cfg.resume = True
     summary2 = Runner(cfg, run_id="test-run").run()
     assert summary2.accepted == 2
+
+    store = Store(db)
+    after = tuple(
+        store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in ("requests", "responses", "rounds", "accepted")
+    )
+    store.close()
+    assert after == before
 
 
 def test_build_llm_config_collects_model_extras(sample_docs: Path, output_dir: Path):
@@ -116,7 +132,7 @@ def test_build_llm_config_collects_model_extras(sample_docs: Path, output_dir: P
         provider_model="azure/strong-dep",
         extra={"api_base": "https://strong.example"},
     )
-    # Two roles sharing the same provider_model — extras should merge.
+    # Roles sharing a model contribute to the same provider options.
     cfg.judge = ModelConfig(
         provider_model="azure/shared",
         extra={"api_base": "https://shared.example"},
@@ -144,7 +160,6 @@ def test_build_llm_config_collects_model_extras(sample_docs: Path, output_dir: P
 
 def test_build_llm_config_omits_models_with_no_extras(sample_docs: Path, output_dir: Path):
     cfg = _cfg(sample_docs, output_dir, "happy")
-    # Default ModelConfig has extra={}; nothing should land in model_extras.
     llm_cfg = _build_llm_config(cfg)
     assert llm_cfg.model_extras == {}
 
@@ -153,17 +168,9 @@ def test_each_role_request_carries_its_configured_temperature(
     sample_docs: Path,
     output_dir: Path,
 ):
-    """Regression guard: every role's persisted request must carry that
-    role's configured temperature, not the challenger's.
-
-    Before per-role plumbing landed, LLMConfig.default_temperature was wired
-    from cfg.challenger.temperature and no agent set req.temperature, so the
-    judge silently ran at 0.7 even when YAML asked for 0.0. This test fails
-    immediately if anyone re-introduces a fallback through the challenger.
-    """
+    """Persist each role's own temperature without a challenger fallback."""
     cfg = _cfg(sample_docs, output_dir, "happy")
-    # Distinct values per role; choose numbers no two roles share so a
-    # cross-wiring bug can't accidentally pass.
+    # Unique values make role cross-wiring visible.
     cfg.challenger = ModelConfig(provider_model="mock/happy", temperature=0.81)
     cfg.weak_solver = ModelConfig(provider_model="mock/happy", temperature=0.72)
     cfg.strong_solver = ModelConfig(provider_model="mock/happy", temperature=0.33)
@@ -178,7 +185,7 @@ def test_each_role_request_carries_its_configured_temperature(
     for row in rows:
         by_role.setdefault(row["role"], set()).add(row["temperature"])
 
-    # `quality` runs on the judge's ModelConfig; `reflector` on the orchestrator's.
+    # Quality uses judge settings; reflection uses orchestrator settings.
     expected = {
         "challenger": 0.81,
         "quality": 0.04,
@@ -187,9 +194,7 @@ def test_each_role_request_carries_its_configured_temperature(
         "judge": 0.04,
         "reflector": 0.55,
     }
-    # The happy path accepts on round 1, so reflector never fires — only check
-    # roles that actually emitted a request. The non-empty role set still
-    # catches any cross-wiring (e.g. judge silently inheriting challenger temp).
+    # The first-round happy path never emits a reflector request.
     fired = set(by_role)
     assert {"challenger", "quality", "weak", "strong", "judge"}.issubset(fired)
     for role in fired:
@@ -198,9 +203,7 @@ def test_each_role_request_carries_its_configured_temperature(
         assert got == {want}, f"role={role!r} expected temperature {want}, got {got}"
 
 
-# ---------------------------------------------------------------------------
 # Verifiable mode end-to-end (math, programmatic verify(), no judge)
-# ---------------------------------------------------------------------------
 
 
 def _verifiable_math_handler(role: str, messages):
@@ -266,9 +269,7 @@ def test_verifiable_math_e2e(output_dir: Path):
     assert store.conn.execute("SELECT COUNT(*) FROM requests WHERE role='judge'").fetchone()[0] == 0
 
 
-# ---------------------------------------------------------------------------
 # Judge-decided mode end-to-end (loop-judge accept, NEED_SCORES → NEED_DECISION)
-# ---------------------------------------------------------------------------
 
 
 def _judge_loop_handler(role: str, messages):
@@ -308,5 +309,5 @@ def test_judge_policy_e2e(sample_docs: Path, output_dir: Path):
     assert summary.accepted == 2 and summary.rejected == 0
 
     store = Store(runner.run_dir / "run.db")
-    # The async loop-judge decision ran for each accepted item (NEED_DECISION state).
+    # Each accepted item passed through the asynchronous loop judge.
     assert store.conn.execute("SELECT COUNT(*) FROM requests WHERE role='loop_judge'").fetchone()[0] == 2

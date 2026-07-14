@@ -1,8 +1,4 @@
-"""Math word problems — a non-document domain.
-
-Grounds the challenger on lightweight 'topic seeds' rather than a corpus,
-demonstrating that the framework is not document-bound.
-"""
+"""Math word problems grounded on lightweight topic seeds."""
 
 from __future__ import annotations
 
@@ -92,8 +88,6 @@ class MathWordProblems(DomainAdapter):
         return MathProblemPayload
 
     def validate_candidate(self, candidate: Candidate) -> list[str]:
-        # Rubric weight bounds are enforced upstream (challenger clamps,
-        # RubricCriterion validates ge=1); no need to re-check here.
         errs: list[str] = []
         p = candidate.payload
         if not isinstance(p.get("problem"), str) or len(p["problem"].strip()) < 10:

@@ -1,9 +1,4 @@
-"""Request fulfillment: the only part of the framework that touches the network.
-
-The :class:`Dispatcher` runs the main loop; ``fulfill`` is a pluggable
-strategy. :func:`fulfill_local` (thread-pool) is the default; the batch
-variant lives in :mod:`autosynth.dispatcher.batch`.
-"""
+"""Local and batch request fulfillment."""
 
 from __future__ import annotations
 

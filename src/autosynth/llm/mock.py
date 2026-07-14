@@ -1,11 +1,4 @@
-"""Scripted, role-aware mock provider for tests and demos.
-
-Mock scenarios register a handler keyed by the second segment of a ``mock/*``
-model string. Two scenarios ship by default:
-
-  - ``mock/scripted`` / ``mock/default`` — a realistic generation→accept trajectory
-  - ``mock/metaopt`` — used by the meta-optimization demo and tests
-"""
+"""Scripted, role-aware mock providers for tests and demos."""
 
 from __future__ import annotations
 
@@ -28,7 +21,6 @@ __all__ = [
 
 
 MockHandler = Callable[[str, list[Message]], str]
-"""(role, messages) -> raw text. Should usually return JSON."""
 
 
 _ROLE_TAGS = (
@@ -43,11 +35,7 @@ _ROUND_RE = re.compile(r"ROUND[=:\s]+(\d+)")
 
 
 def _canonical_role(role: str, all_text: str) -> str:
-    """Map (LLMClient role, prompt text) → canonical role for mock dispatch.
-
-    A single role label can serve multiple agents (e.g. the judge client serves
-    both quality_check and score), so mock handlers need to inspect the prompt.
-    """
+    """Disambiguate agents that share the same client role."""
     for canon, tag in _ROLE_TAGS:
         if role == canon or tag in all_text:
             return canon
@@ -97,9 +85,7 @@ def dispatch_mock(provider_model: str, role: str, messages: list[Message]) -> st
     return _MOCK_REGISTRY.dispatch(provider_model, role, messages)
 
 
-# ---------------------------------------------------------------------------
 # Default mock scenarios
-# ---------------------------------------------------------------------------
 
 
 def _default_mock_handler(role: str, messages: list[Message]) -> str:

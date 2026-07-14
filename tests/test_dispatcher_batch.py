@@ -1,8 +1,4 @@
-"""Tests for the batch dispatcher.
-
-Drives a full Runner-equivalent loop using the MockBatchProvider, exercising
-submit → poll → fetch and the dispatcher's polling hook.
-"""
+"""Batch provider and dispatcher integration."""
 
 from __future__ import annotations
 
@@ -100,9 +96,7 @@ def _make_dispatcher(store, docs_dir, tmp_path, provider) -> Dispatcher:
     )
 
 
-# ---------------------------------------------------------------------------
 # MockBatchProvider sanity
-# ---------------------------------------------------------------------------
 
 
 def test_mock_batch_provider_submit_complete_fetch():
@@ -117,33 +111,41 @@ def test_mock_batch_provider_submit_complete_fetch():
     )
     handle = p.submit([req])
     assert isinstance(handle, BatchHandle)
-    assert not p.is_complete(handle.batch_id)  # poll 1
-    assert p.is_complete(handle.batch_id)  # poll 2
+    assert not p.is_complete(handle.batch_id)
+    assert p.is_complete(handle.batch_id)
     results = list(p.fetch(handle.batch_id))
     assert len(results) == 1
     assert isinstance(results[0], BatchResult)
     assert results[0].response is not None
 
 
-# ---------------------------------------------------------------------------
 # End-to-end through Dispatcher
-# ---------------------------------------------------------------------------
 
 
 def test_dispatcher_drives_run_via_batch_provider(store, docs_dir, tmp_path):
     provider = MockBatchProvider(ready_after_polls=1)
     disp = _make_dispatcher(store, docs_dir, tmp_path, provider)
     summary = disp.run()
-    # Default mock scenario accepts on round 1; with 1 weak + 1 strong it
-    # satisfies the rubric and gets accepted — deterministic over the batch path.
+    # The default mock accepts deterministically on the first round.
     assert summary.accepted == 1 and summary.rejected == 0
 
 
 def test_batch_id_is_tagged_then_cleared(store, docs_dir, tmp_path):
-    provider = MockBatchProvider(ready_after_polls=1)
+    tagged_counts: list[int] = []
+
+    class InspectingProvider(MockBatchProvider):
+        def is_complete(self, batch_id):
+            tagged_counts.append(
+                store.conn.execute("SELECT COUNT(*) FROM requests WHERE batch_id=?", (batch_id,)).fetchone()[
+                    0
+                ]
+            )
+            return super().is_complete(batch_id)
+
+    provider = InspectingProvider(ready_after_polls=1)
     disp = _make_dispatcher(store, docs_dir, tmp_path, provider)
     disp.run()
-    # After completion, no request should remain tagged.
+    assert tagged_counts and all(count > 0 for count in tagged_counts)
     rows = store.conn.execute("SELECT COUNT(*) FROM requests WHERE batch_id IS NOT NULL").fetchone()
     assert rows[0] == 0
 
@@ -164,13 +166,11 @@ def test_batch_provider_failure_marks_request_failed(store, docs_dir, tmp_path):
     disp = _make_dispatcher(store, docs_dir, tmp_path, FailingProvider())
     disp.run()
     rows = store.conn.execute("SELECT status, failure_count FROM requests").fetchall()
-    # All requests should have failed at least once.
     assert any(r["failure_count"] >= 1 for r in rows)
 
 
 def test_poll_reconciles_requests_missing_from_results(store, docs_dir, tmp_path):
-    """A terminal batch that returns no result for a tagged request must fail it,
-    not strand it IN_FLIGHT once the batch tag is cleared."""
+    """Missing batch results must not leave tagged requests in flight."""
 
     class EmptyFetchProvider:
         provider_name = "empty"
@@ -190,10 +190,10 @@ def test_poll_reconciles_requests_missing_from_results(store, docs_dir, tmp_path
             return True
 
         def fetch(self, batch_id):
-            return []  # provider drops every result
+            return []
 
     disp = _make_dispatcher(store, docs_dir, tmp_path, EmptyFetchProvider())
-    summary = disp.run()  # must terminate, not hang
+    summary = disp.run()
     assert summary.accepted == 0 and summary.rejected == 1
     errors = [
         r["last_error"]
@@ -203,8 +203,7 @@ def test_poll_reconciles_requests_missing_from_results(store, docs_dir, tmp_path
 
 
 def test_poll_skips_untagged_results(store, docs_dir, tmp_path):
-    """A result with a request_id we never tagged (empty/garbled custom_id) must be
-    skipped, not crash the poll loop trying to fail an unknown request."""
+    """Ignore results whose request IDs were never tagged."""
 
     class BogusResultProvider:
         provider_name = "bogus"
@@ -224,18 +223,15 @@ def test_poll_skips_untagged_results(store, docs_dir, tmp_path):
             return True
 
         def fetch(self, batch_id):
-            # An untagged id (here: empty) alongside no real results. The real
-            # tagged request is reconciled by the tagged-but-unseen sweep.
+            # The real tagged request is recovered by the unseen-request sweep.
             return [BatchResult(request_id="", response=None, error="boom")]
 
     disp = _make_dispatcher(store, docs_dir, tmp_path, BogusResultProvider())
-    summary = disp.run()  # must terminate, not raise KeyError on the untagged id
+    summary = disp.run()
     assert summary.accepted == 0 and summary.rejected == 1
 
 
-# ---------------------------------------------------------------------------
 # LiteLLMBatchProvider (real provider over LiteLLM's batch API, mocked)
-# ---------------------------------------------------------------------------
 
 
 def _req(request_id="r1", *, role="quality", json_mode=False, temperature=None):
@@ -276,7 +272,7 @@ def test_litellm_provider_submit_serializes_openai_batch(monkeypatch):
     assert captured["endpoint"] == "/v1/chat/completions" and captured["input_file_id"] == "file-1"
     line = json.loads(captured["bytes"].decode().strip())
     assert line["custom_id"] == "r1"
-    assert line["body"]["model"] == "gpt-4o-mini"  # provider prefix stripped
+    assert line["body"]["model"] == "gpt-4o-mini"
     assert line["body"]["response_format"] == {"type": "json_object"}
     assert line["body"]["temperature"] == 0.5
 
@@ -358,9 +354,7 @@ def test_litellm_provider_fetch_surfaces_error_file(monkeypatch):
     assert results[0].error is not None and "boom" in results[0].error
 
 
-# ---------------------------------------------------------------------------
 # Runner wiring (dispatcher.mode == "batch")
-# ---------------------------------------------------------------------------
 
 
 def test_runner_batch_mode_with_mock_provider(docs_dir, tmp_path):
@@ -384,9 +378,7 @@ def test_runner_batch_mode_with_mock_provider(docs_dir, tmp_path):
     assert summary.accepted == 1 and summary.rejected == 0
 
 
-# ---------------------------------------------------------------------------
 # AnthropicBatchProvider (native Message Batches API, HTTP seam stubbed)
-# ---------------------------------------------------------------------------
 
 
 def _areq(request_id="r1", *, temperature=None, max_tokens=None, system=False):
@@ -409,9 +401,9 @@ def test_anthropic_request_translation_hoists_system_and_defaults_max_tokens():
     out = _to_anthropic_request(_areq(system=True, temperature=0.3), max_tokens_default=1024)
     assert out["custom_id"] == "r1"
     params = out["params"]
-    assert params["model"] == "claude-haiku-4-5"  # provider prefix stripped
-    assert params["max_tokens"] == 1024  # default applied (Messages API requires it)
-    assert params["system"] == "be terse"  # system message hoisted out of messages
+    assert params["model"] == "claude-haiku-4-5"
+    assert params["max_tokens"] == 1024
+    assert params["system"] == "be terse"
     assert params["messages"] == [{"role": "user", "content": "hi"}]
     assert params["temperature"] == 0.3
 
@@ -439,7 +431,7 @@ def test_anthropic_result_parsing_succeeded(monkeypatch):
     assert r.error is None and r.response is not None
     assert r.response.text == "hello"
     assert r.response.prompt_tokens == 5 and r.response.completion_tokens == 2
-    assert r.response.cost_usd == 0.002  # cost computed from usage, like the OpenAI path
+    assert r.response.cost_usd == 0.002
 
 
 def test_anthropic_result_parsing_errored():
@@ -491,7 +483,7 @@ def test_anthropic_provider_submit_poll_fetch(monkeypatch):
     handle = p.submit([_areq()])
     assert handle.batch_id == "msgbatch_1"
     assert captured["payload"]["requests"][0]["custom_id"] == "r1"
-    assert p.is_complete("msgbatch_1") is False  # still in_progress
+    assert p.is_complete("msgbatch_1") is False
     state["status"] = "ended"
     assert p.is_complete("msgbatch_1") is True
     results = list(p.fetch("msgbatch_1"))

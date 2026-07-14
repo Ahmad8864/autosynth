@@ -1,4 +1,4 @@
-"""Config validation: strict unknown-key rejection, bundled-config sanity, env interpolation."""
+"""Configuration validation and environment interpolation."""
 
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ def _min_run(**extra) -> dict:
 
 def test_unknown_top_level_key_rejected():
     with pytest.raises(ValidationError):
-        RunConfig.model_validate(_min_run(budget_usdd=1.0))  # typo'd budget_usd
+        RunConfig.model_validate(_min_run(budget_usdd=1.0))
 
 
 def test_unknown_nested_key_rejected():
     with pytest.raises(ValidationError):
-        RunConfig.model_validate(_min_run(acceptance={"weak_avg_maxx": 0.6}))  # typo'd weak_avg_max
+        RunConfig.model_validate(_min_run(acceptance={"weak_avg_maxx": 0.6}))
 
 
 def test_known_keys_validate():
@@ -32,13 +32,10 @@ def test_known_keys_validate():
 
 
 def test_load_snapshot_ignores_removed_keys(tmp_path: Path):
-    """A snapshot resumes even with keys removed since it was written; the strict
-    loader still rejects the same file."""
+    """Snapshots tolerate fields removed from the current schema."""
     snap = tmp_path / "config.snapshot.yaml"
     snap.write_text(
-        "domain: {name: qa_from_documents}\n"
-        "seed: 0\n"  # removed top-level key
-        "loop: {max_rounds: 4, stop_on_first_accept: true}\n"  # removed nested key
+        "domain: {name: qa_from_documents}\nseed: 0\nloop: {max_rounds: 4, stop_on_first_accept: true}\n"
     )
     cfg = load_snapshot(snap)
     assert cfg.loop.max_rounds == 4
@@ -48,8 +45,7 @@ def test_load_snapshot_ignores_removed_keys(tmp_path: Path):
 
 @pytest.mark.parametrize("path", _CONFIGS, ids=lambda p: p.name)
 def test_bundled_config_loads(path: Path):
-    """Every shipped config must validate — catches typos / stray keys like a
-    missing space in ``strong_solver:{...}`` that strict mode now rejects."""
+    """Every shipped configuration should pass strict validation."""
     load_config(path)
 
 
@@ -63,4 +59,4 @@ def test_env_var_interpolation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     )
     cfg = load_config(p)
     assert cfg.judge.provider_model == "openai/gpt-4o"
-    assert cfg.weak_solver.provider_model == "mock/scripted"  # default branch
+    assert cfg.weak_solver.provider_model == "mock/scripted"

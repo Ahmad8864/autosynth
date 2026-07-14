@@ -21,7 +21,7 @@ uv pip install autosynth             # core
 uv pip install "autosynth[hf]"       # + Hugging Face export
 ```
 
-Python 3.10+. Plain `pip install autosynth` works too. For a from-source / editable install for development, see [CONTRIBUTING.md](CONTRIBUTING.md).
+Python 3.10+. Plain `pip install autosynth` works too. For an editable source install, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quick start (no API keys)
 
@@ -143,7 +143,7 @@ Inspect the schema with `sqlite3 outputs/<run_id>/run.db .schema`. The tables an
 
 ## Safety and limitations
 
-- Every accepted datapoint carries an `acceptance_rationale` and a serialized `EvalReport`. There is no silent acceptance path.
+- Every accepted datapoint records its `acceptance_rationale` and per-attempt evaluation scores. There is no silent acceptance path.
 - The built-in PII filter (`safety.enabled: true`) is a conservative heuristic, not a DLP system. Regulated workloads should provide a filter through `safety.filter`.
 - Weak and strong solvers differ by model and sampling settings, not by instructions to behave weakly or strongly.
 - Accepted examples are not checked for diversity or near-duplicates. Add a deduplication step if your dataset requires one.

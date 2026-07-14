@@ -1,5 +1,4 @@
-"""Response-format selection: strict schemas for fixed-shape roles on providers
-that support structured outputs, plain JSON mode otherwise."""
+"""Choose strict structured output or plain JSON for each request."""
 
 from __future__ import annotations
 
@@ -36,8 +35,7 @@ class RubricCriterionOutput(BaseModel):
 
 
 class ChallengerEnvelope(BaseModel):
-    """Generic challenger candidate envelope — the fallback when a domain
-    doesn't declare a stricter payload schema."""
+    """Fallback envelope when a domain has no payload model."""
 
     payload: dict[str, Any]
     reference_output: str
@@ -81,8 +79,7 @@ _MODELS: dict[str, type[BaseModel]] = {
 
 @cache
 def challenger_schema_for(payload_model: type[BaseModel] | None) -> type[BaseModel]:
-    """Build the strict challenger envelope, tightening `payload` to `payload_model`
-    when the domain declares one. Cached so equal payload models share one class."""
+    """Build a candidate envelope around the domain payload model."""
     if payload_model is None:
         return ChallengerEnvelope
     return create_model(
@@ -95,13 +92,7 @@ def challenger_schema_for(payload_model: type[BaseModel] | None) -> type[BaseMod
 
 
 def _has_open_map(node: Any) -> bool:
-    """True if the JSON schema has an open/dynamic-key object anywhere.
-
-    An ``additionalProperties`` that is ``True`` or a subschema (i.e. a dict-typed
-    field like challenger ``payload`` without a domain model, or judge
-    ``per_criterion``) is outside the OpenAI/Azure strict structured-output subset,
-    where every object must pin ``additionalProperties: false``.
-    """
+    """Return whether a schema contains an object with dynamic keys."""
     if isinstance(node, dict):
         ap = node.get("additionalProperties", False)
         if ap is True or isinstance(ap, dict):
@@ -114,11 +105,7 @@ def _has_open_map(node: Any) -> bool:
 
 @cache
 def _strict_compatible(model: type[BaseModel]) -> bool:
-    """Whether ``model`` can be sent as a provider ``strict`` schema at all.
-
-    Schemas with an open map (see :func:`_has_open_map`) 400 on OpenAI/Azure, so
-    they must fall back to plain JSON mode regardless of provider schema support.
-    """
+    """Reject open maps unsupported by strict provider schemas."""
     return not _has_open_map(model.model_json_schema())
 
 

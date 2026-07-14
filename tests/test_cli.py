@@ -12,8 +12,7 @@ runner = CliRunner()
 
 
 def test_run_resume_errors_when_run_missing(tmp_path: Path):
-    """`run --resume ID` must fail loudly when no run.db exists for ID under the
-    config's output_dir, rather than silently seeding a fresh empty run."""
+    """A missing resume database must not create an empty run."""
     cfg = tmp_path / "c.yaml"
     cfg.write_text(
         f"output_dir: {tmp_path}\ndomain: {{name: qa_from_documents, params: {{source_dir: {tmp_path}}}}}\n"

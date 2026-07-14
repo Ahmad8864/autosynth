@@ -22,7 +22,6 @@ def test_apply_harness_appends_to_system_message():
     assert "ADDITIONAL RULES" in out[0]["content"]
     assert "rule one" in out[0]["content"]
     assert "rule two" in out[0]["content"]
-    # User message unchanged.
     assert out[1] == msgs[1]
 
 

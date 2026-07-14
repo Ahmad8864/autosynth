@@ -1,4 +1,4 @@
-"""Verifier / Judge: quality-check and per-solver rubric scoring."""
+"""Build and parse quality-check and scoring requests."""
 
 from __future__ import annotations
 
@@ -64,11 +64,7 @@ def build_judge_request(
     harness: HarnessSpec | None = None,
     parent_response_id: str,
 ) -> LLMRequest:
-    """Build a judge request that scores one solver attempt.
-
-    The request_id is keyed on parent_response_id so distinct solver attempts
-    produce distinct judge requests even if attempt indices collide.
-    """
+    """Build a scoring request keyed to its parent solver response."""
     h = harness or DEFAULT_HARNESS
     messages = domain.judge_prompt(candidate, solver_response)
     messages = apply_harness(messages, h.rules_for("judge"))

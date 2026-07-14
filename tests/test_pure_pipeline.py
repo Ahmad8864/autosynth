@@ -1,10 +1,4 @@
-"""Exhaustive state-transition tests for the pure pipeline.
-
-Every state has at least one happy-path test and at least one rejection
-path. The partial-completion invariant (MIGRATION_PLAN.md §2.3) is the
-non-negotiable test: violating it would cause double-emission of requests
-on the next dispatcher loop iteration.
-"""
+"""State transitions and partial-response handling in the pure pipeline."""
 
 from __future__ import annotations
 
@@ -34,9 +28,7 @@ from autosynth.safety import SafetyVerdict
 from autosynth.schemas import SolverScore
 from autosynth.utils import stable_id
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -123,9 +115,7 @@ def _judge_resp(
     )
 
 
-# ---------------------------------------------------------------------------
 # PENDING → NEED_CANDIDATE
-# ---------------------------------------------------------------------------
 
 
 def test_pending_emits_challenger_request(domain, grounding):
@@ -136,9 +126,7 @@ def test_pending_emits_challenger_request(domain, grounding):
     assert res.new_requests[0].role == "challenger"
 
 
-# ---------------------------------------------------------------------------
 # NEED_CANDIDATE
-# ---------------------------------------------------------------------------
 
 
 def test_need_candidate_advances_to_need_quality_on_valid_response(domain, grounding):
@@ -158,10 +146,10 @@ def test_need_candidate_advances_to_need_quality_on_valid_response(domain, groun
 
 
 def test_need_candidate_partial_responses_noop(domain, grounding):
-    """The challenger hasn't responded yet — step() must be a noop."""
+    """Wait for the challenger without changing state."""
     item = _seed_item(grounding, state=State.NEED_CANDIDATE)
     res = step(item, [], cfg=_cfg(), harness=DEFAULT_HARNESS, domain=domain, grounding=grounding)
-    assert res.state == item  # exact same state object
+    assert res.state == item
     assert res.new_requests == ()
     assert res.completed_round is None
 
@@ -200,7 +188,7 @@ def test_need_candidate_parse_failure_at_max_rounds_goes_to_rejected(domain, gro
 
 
 def test_need_candidate_non_object_json_goes_to_reflection(domain, grounding):
-    # Valid JSON but non-object (a top-level array) must reflect, not escape step().
+    # Invalid top-level shape should enter the normal reflection path.
     item = _seed_item(grounding, state=State.NEED_CANDIDATE)
     bad = StepResponse(
         request_id=stable_id("i1", 1, "challenger", 0),
@@ -216,7 +204,7 @@ def test_need_candidate_non_object_json_goes_to_reflection(domain, grounding):
 
 
 def test_safety_filter_exception_fails_closed_to_reflection(domain, grounding):
-    # A user filter that raises must fail closed, not livelock the item (H3).
+    # User filter errors fail closed without escaping ``step``.
     cfg = _cfg(max_rounds=3)
     cfg.safety.enabled = True
     item = _seed_item(grounding, state=State.NEED_CANDIDATE)
@@ -276,15 +264,12 @@ def test_need_candidate_safety_block_goes_to_reflection(domain, grounding):
     assert res.new_requests[0].role == "reflector"
 
 
-# ---------------------------------------------------------------------------
 # NEED_QUALITY
-# ---------------------------------------------------------------------------
 
 
 def test_need_quality_pass_emits_2n_solver_requests(domain, grounding):
     cand_text = _challenger_text()
     item = _seed_item(grounding, state=State.NEED_CANDIDATE)
-    # Advance to NEED_QUALITY with candidate.
     step1 = step(
         item,
         [StepResponse(stable_id("i1", 1, "challenger", 0), "challenger", 1, 0, cand_text)],
@@ -356,9 +341,7 @@ def test_need_quality_partial_response_noop(domain, grounding):
     assert res.new_requests == ()
 
 
-# ---------------------------------------------------------------------------
-# NEED_SCORES — the throughput-unlock state and the partial-completion test
-# ---------------------------------------------------------------------------
+# NEED_SCORES and partial completion
 
 
 def test_need_scores_emits_judge_for_each_solver_response(domain, grounding):
@@ -377,22 +360,21 @@ def test_need_scores_emits_judge_for_each_solver_response(domain, grounding):
         domain=domain,
         grounding=grounding,
     )
-    assert res.state.state == State.NEED_SCORES  # not advanced
+    assert res.state.state == State.NEED_SCORES
     assert {r.role for r in res.new_requests} == {"judge"}
     assert len(res.new_requests) == 2
     assert res.completed_round is None
 
 
 def test_partial_responses_noop_at_need_scores(domain, grounding):
-    """MIGRATION_PLAN §2.3: with 3/4 judge responses, step() emits no new
-    requests for the missing one and does NOT advance state."""
+    """Partial scores neither advance state nor duplicate requests."""
     item = _seed_item(
         grounding,
         state=State.NEED_SCORES,
         candidate=_make_candidate(grounding.source_id),
         quality=_pass_quality(),
     )
-    cfg = _cfg(weak=2, strong=2)  # expects 4 judge responses total
+    cfg = _cfg(weak=2, strong=2)
     res = step(
         item,
         [
@@ -405,11 +387,11 @@ def test_partial_responses_noop_at_need_scores(domain, grounding):
         domain=domain,
         grounding=grounding,
     )
-    assert res.state.state == State.NEED_SCORES  # NOT advanced
-    assert res.new_requests == ()  # no double-emission
+    assert res.state.state == State.NEED_SCORES
+    assert res.new_requests == ()
     assert res.completed_round is None
     assert len(res.state.weak_scores) == 2
-    assert len(res.state.strong_scores) == 1  # only 1 strong so far
+    assert len(res.state.strong_scores) == 1
 
 
 def test_need_scores_completes_and_accepts(domain, grounding):
@@ -450,7 +432,7 @@ def test_need_scores_rejects_and_reflects(domain, grounding):
     res = step(
         item,
         [
-            _judge_resp(solver_role="weak", attempt=0, total=0.7),  # too high
+            _judge_resp(solver_role="weak", attempt=0, total=0.7),
             _judge_resp(solver_role="weak", attempt=1, total=0.7),
             _judge_resp(solver_role="strong", attempt=0, total=0.9),
             _judge_resp(solver_role="strong", attempt=1, total=0.9),
@@ -492,9 +474,7 @@ def test_need_scores_rejects_terminally_at_max_rounds(domain, grounding):
     assert res.state.rejection_reasons
 
 
-# ---------------------------------------------------------------------------
 # NEED_REFLECTION
-# ---------------------------------------------------------------------------
 
 
 def test_reflection_advances_to_need_candidate_with_bumped_round(domain, grounding):
@@ -520,9 +500,7 @@ def test_reflection_partial_response_noop(domain, grounding):
     assert res.state == item
 
 
-# ---------------------------------------------------------------------------
 # Terminal + determinism
-# ---------------------------------------------------------------------------
 
 
 def test_terminal_states_are_noops(domain, grounding):
@@ -545,23 +523,18 @@ def test_step_is_deterministic(domain, grounding):
     resp = StepResponse(stable_id("i1", 1, "challenger", 0), "challenger", 1, 0, _challenger_text())
     r1 = step(item, [resp], cfg=_cfg(), harness=DEFAULT_HARNESS, domain=domain, grounding=grounding)
     r2 = step(item, [resp], cfg=_cfg(), harness=DEFAULT_HARNESS, domain=domain, grounding=grounding)
-    assert r1.state.state == r2.state.state
-    assert [q.request_id for q in r1.new_requests] == [q.request_id for q in r2.new_requests]
+    assert r1 == r2
 
 
 def test_responses_for_other_rounds_are_ignored(domain, grounding):
     item = _seed_item(grounding, state=State.NEED_CANDIDATE, current_round=2)
-    stale = StepResponse(
-        stable_id("i1", 1, "challenger", 0), "challenger", 1, 0, _challenger_text()
-    )  # round 1
+    stale = StepResponse(stable_id("i1", 1, "challenger", 0), "challenger", 1, 0, _challenger_text())
     res = step(item, [stale], cfg=_cfg(), harness=DEFAULT_HARNESS, domain=domain, grounding=grounding)
     assert res.state == item
     assert res.new_requests == ()
 
 
-# ---------------------------------------------------------------------------
 # Helpers used by tests above
-# ---------------------------------------------------------------------------
 
 
 def _make_candidate(source_id: str):
@@ -586,9 +559,7 @@ def _pass_quality():
     return QualityCheck(passed=True, failures=[], notes="ok")
 
 
-# ---------------------------------------------------------------------------
 # Verifiable mode — in-process scoring via domain.verify() (no judge)
-# ---------------------------------------------------------------------------
 
 
 class _VerifyDomain(DomainAdapter):
@@ -667,8 +638,8 @@ def test_verified_scores_solvers_without_judge(grounding):
     res = _verify_step(
         _scored_item(grounding), [_solver_text("weak", 0, "wrong"), _solver_text("strong", 0, "CORRECT")]
     )
-    assert res.state.state == State.NEED_SCORES  # not all 4 in
-    assert res.new_requests == ()  # no judge requests in verifiable mode
+    assert res.state.state == State.NEED_SCORES
+    assert res.new_requests == ()
     assert len(res.state.weak_scores) == 1 and len(res.state.strong_scores) == 1
     assert res.state.weak_scores[0].correct is False and res.state.weak_scores[0].total == 0.0
     assert res.state.strong_scores[0].correct is True and res.state.strong_scores[0].total == 1.0
@@ -698,7 +669,7 @@ def test_verified_rejects_and_reflects(grounding):
             _solver_text("weak", 0, "wrong"),
             _solver_text("weak", 1, "wrong"),
             _solver_text("strong", 0, "CORRECT"),
-            _solver_text("strong", 1, "wrong"),  # only 1/2 strong correct < 2
+            _solver_text("strong", 1, "wrong"),
         ],
         max_rounds=3,
     )
@@ -709,13 +680,13 @@ def test_verified_rejects_and_reflects(grounding):
 
 
 def test_verified_verify_exception_counts_incorrect(grounding):
-    """A verify() that raises is swallowed inside step() (no livelock); attempt counts wrong."""
+    """Verifier errors count as incorrect without escaping ``step``."""
     res = _verify_step(
         _scored_item(grounding),
         [_solver_text(role, a, "RAISE") for role in ("weak", "strong") for a in (0, 1)],
         max_rounds=1,
     )
-    assert res.state.state == State.REJECTED  # all incorrect -> strong gate fails -> terminal at max_rounds=1
+    assert res.state.state == State.REJECTED
     scores = res.state.weak_scores + res.state.strong_scores
     assert all(s.total == 0.0 and s.correct is None for s in scores)
     assert all(any("verify_error" in f for f in s.failure_modes) for s in scores)
@@ -725,15 +696,13 @@ def test_verified_dedups_redelivered_solver(grounding):
     prior = (SolverScore(solver="weak", attempt=0, raw_response="x", total=0.0, correct=False),)
     res = _verify_step(
         _scored_item(grounding, weak_scores=prior),
-        [_solver_text("weak", 0, "wrong"), _solver_text("weak", 1, "wrong")],  # attempt 0 re-delivered
+        [_solver_text("weak", 0, "wrong"), _solver_text("weak", 1, "wrong")],
     )
-    assert len(res.state.weak_scores) == 2  # attempt 0 not double-counted
+    assert len(res.state.weak_scores) == 2
     assert len(res.scores_to_persist) == 1  # only the genuinely new attempt
 
 
-# ---------------------------------------------------------------------------
 # Judge-decided policy — NEED_SCORES → NEED_DECISION → accept / improve
-# ---------------------------------------------------------------------------
 
 
 def _loop_judge_resp(*, verdict="improve", suggestion="harder", reason="too easy", round_n=1) -> StepResponse:
@@ -795,7 +764,7 @@ def test_judge_scores_complete_emits_loop_judge(domain, grounding):
     )
     assert res.state.state == State.NEED_DECISION
     assert [r.role for r in res.new_requests] == ["loop_judge"]
-    assert res.completed_round is None  # not finalized until the judge decides
+    assert res.completed_round is None
     assert len(res.scores_to_persist) == 4
 
 
@@ -813,7 +782,7 @@ def test_decision_improve_bumps_round_with_suggestion(grounding):
         grounding,
         max_rounds=3,
     )
-    assert res.state.state == State.NEED_CANDIDATE  # straight to next round, no reflector
+    assert res.state.state == State.NEED_CANDIDATE
     assert res.state.current_round == 2
     assert "add a numeric trap" in res.state.last_feedback
     assert [r.role for r in res.new_requests] == ["challenger"]
@@ -839,9 +808,7 @@ def test_decision_noop_without_response(grounding):
     assert res.new_requests == ()
 
 
-# ---------------------------------------------------------------------------
 # Conditional strong-solver evaluation (loop.short_circuit_strong)
-# ---------------------------------------------------------------------------
 
 
 def _sc_cfg(**kw):
@@ -872,12 +839,12 @@ def test_short_circuit_emits_weak_only(domain, grounding):
         grounding=grounding,
     )
     assert res.state.state == State.NEED_SCORES
-    assert {r.role for r in res.new_requests} == {"weak"}  # strong withheld
+    assert {r.role for r in res.new_requests} == {"weak"}
     assert len(res.new_requests) == 2
 
 
 def test_short_circuit_runs_strong_when_weak_hard(domain, grounding):
-    # weak appropriately fails (low scores) -> gate passes -> strong is emitted
+    # Passing the weak gate releases strong requests.
     item = _seed_item(
         grounding,
         state=State.NEED_SCORES,
@@ -894,12 +861,12 @@ def test_short_circuit_runs_strong_when_weak_hard(domain, grounding):
         grounding=grounding,
     )
     assert res.state.state == State.NEED_SCORES
-    assert {r.role for r in res.new_requests} == {"strong"}  # strong now emitted
+    assert {r.role for r in res.new_requests} == {"strong"}
     assert len(res.new_requests) == 2
 
 
 def test_short_circuit_skips_strong_when_weak_too_capable(domain, grounding):
-    # weak solves it too well (high scores) -> gate fails -> strong skipped, reflect
+    # A capable weak solver skips strong evaluation and triggers reflection.
     item = _seed_item(
         grounding,
         state=State.NEED_SCORES,
@@ -924,7 +891,7 @@ def test_short_circuit_skips_strong_when_weak_too_capable(domain, grounding):
 
 
 def test_short_circuit_disarms_once_strong_scoring(domain, grounding):
-    # strong already scoring -> short-circuit branch does not re-emit strong
+    # Do not re-emit strong requests already in progress.
     item = _seed_item(
         grounding,
         state=State.NEED_SCORES,
@@ -941,7 +908,6 @@ def test_short_circuit_disarms_once_strong_scoring(domain, grounding):
         domain=domain,
         grounding=grounding,
     )
-    # both strong scores now in -> finalize (accept), not a re-emit of strong solvers
     assert res.state.state == State.ACCEPTED
     assert not any(r.role == "strong" for r in res.new_requests)
 
@@ -962,4 +928,4 @@ def test_short_circuit_strong_samples_zero_does_not_stall(domain, grounding):
         domain=domain,
         grounding=grounding,
     )
-    assert res.state.state != State.NEED_SCORES  # finalizes instead of stranding
+    assert res.state.state != State.NEED_SCORES

@@ -276,7 +276,8 @@ def test_audit_parse_error_fails_closed(domain, grounding):
 
 def test_audit_ignores_unrelated_responses(domain, grounding):
     item = _audit_item(grounding)
-    res = _step(item, [], cfg=_cfg(), domain=domain, grounding=grounding)
+    unrelated = _judge_resp(solver_role="weak", attempt=0, total=0.2)
+    res = _step(item, [unrelated], cfg=_cfg(), domain=domain, grounding=grounding)
     assert res.state == item
     assert res.new_requests == ()
 

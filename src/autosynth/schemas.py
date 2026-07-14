@@ -1,8 +1,4 @@
-"""Core data shapes for candidates, rounds, trajectories, and evaluations.
-
-These shapes are domain-agnostic. A domain plugin extends `Candidate.payload`
-and `Candidate.rubric` to carry its own structured content.
-"""
+"""Domain-independent data models for the generation pipeline."""
 
 from __future__ import annotations
 
@@ -13,12 +9,7 @@ from pydantic import BaseModel, Field
 
 
 class RubricCriterion(BaseModel):
-    """A single, positive, weighted scoring criterion.
-
-    Following the paper's meta-optimized recipe: positive-only criteria with
-    integer weights capped at 7 by default. The cap is enforced at validation
-    time by the verifier, not here, so domains can opt out.
-    """
+    """A positive, weighted scoring criterion."""
 
     id: str
     description: str
@@ -26,12 +17,7 @@ class RubricCriterion(BaseModel):
 
 
 class Candidate(BaseModel):
-    """A candidate datapoint emitted by the challenger.
-
-    `payload` is the domain-specific structured content (question, answer,
-    context, problem statement, ticket body, etc.). Domains define its shape;
-    here it is opaque JSON.
-    """
+    """A candidate with a domain-defined payload."""
 
     candidate_id: str
     domain: str
@@ -49,15 +35,9 @@ class QualityCheck(BaseModel):
 
 
 class SolverScore(BaseModel):
-    """Score for a single solver invocation.
+    """Rubric score or binary verification result for one solver attempt."""
 
-    In rubric mode ``total`` is the weighted-rubric score in [0, 1] and
-    ``correct`` is ``None``. In verifiable mode ``total`` is binary (1.0 /
-    0.0) and ``correct`` records the programmatic verdict: ``True``/``False``,
-    or ``None`` when the response could not be verified (counted as incorrect).
-    """
-
-    solver: str  # "weak" | "strong"
+    solver: str
     attempt: int
     raw_response: str
     total: float = Field(ge=0.0, le=1.0)
@@ -72,7 +52,7 @@ class EvalReport(BaseModel):
     weak_avg: float = 0.0
     weak_max: float = 0.0
     weak_min: float = 0.0
-    weak_std: float = 0.0  # per-prompt rollout spread; a GRPO-suitability signal (paper §3.2)
+    weak_std: float = 0.0
     strong_avg: float = 0.0
     strong_max: float = 0.0
     strong_min: float = 0.0

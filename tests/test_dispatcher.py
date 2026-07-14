@@ -1,14 +1,11 @@
-"""Tests for the Dispatcher.
-
-Covers: end-to-end happy-path drive via local fulfill, claim_pending
-concurrency under load, budget abort, resume normalization integration,
-and the unrecoverable-failure path.
-"""
+"""Dispatcher behavior across local execution, failure, and resume."""
 
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
+from threading import Lock
 
 import pytest
 
@@ -28,9 +25,7 @@ from autosynth.llm import LLMClient, register_mock
 from autosynth.pipeline import State
 from autosynth.store import Store
 
-# ---------------------------------------------------------------------------
 # fixtures + mock scenarios
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -135,9 +130,7 @@ def _disp_failing(role: str, messages):
 register_mock("disp_failing", _disp_failing)
 
 
-# ---------------------------------------------------------------------------
 # happy path
-# ---------------------------------------------------------------------------
 
 
 def test_dispatcher_happy_path_accepts_both_items(store, cfg, docs_dir):
@@ -151,7 +144,6 @@ def test_dispatcher_happy_path_accepts_both_items(store, cfg, docs_dir):
 def test_dispatcher_writes_solver_scores(store, cfg, docs_dir):
     disp, _ = _seed_run(store, cfg, docs_dir)
     disp.run()
-    # Each accepted item has weak_samples + strong_samples = 4 score rows.
     all_items = list(store.conn.execute("SELECT item_id FROM items"))
     for row in all_items:
         scores = store.conn.execute(
@@ -173,7 +165,7 @@ def test_dispatcher_writes_round_blobs(store, cfg, docs_dir):
         assert r["candidate_blob"] is not None
         assert r["quality_blob"] is not None
         assert r["eval_blob"] is not None
-        assert r["accepted"] == 1  # all rounds accepted under disp_happy
+        assert r["accepted"] == 1
 
 
 def test_dispatcher_export_jsonl_after_run(store, cfg, docs_dir, tmp_path):
@@ -187,39 +179,40 @@ def test_dispatcher_export_jsonl_after_run(store, cfg, docs_dir, tmp_path):
     assert all(r["gap"] > 0.2 for r in records)
 
 
-# ---------------------------------------------------------------------------
 # concurrency / claim_pending under load
-# ---------------------------------------------------------------------------
 
 
-def test_dispatcher_concurrent_fulfill_no_duplicate_responses(store, cfg, docs_dir):
-    # Use a higher concurrency to stress claim_pending.
+def test_dispatcher_concurrent_fulfill_calls_each_request_once(store, cfg, docs_dir, monkeypatch):
     cfg.dispatcher.concurrency = 8
     cfg.loop.weak_samples = 4
     cfg.loop.strong_samples = 4
     disp, _ = _seed_run(store, cfg, docs_dir)
+
+    calls: Counter[str] = Counter()
+    calls_lock = Lock()
+    complete = disp.llm.complete
+
+    def counted_complete(request):
+        with calls_lock:
+            calls[request.request_id] += 1
+        return complete(request)
+
+    monkeypatch.setattr(disp.llm, "complete", counted_complete)
     disp.run()
-    # Every request has exactly one response.
-    rows = store.conn.execute(
-        "SELECT request_id, COUNT(*) AS n FROM responses GROUP BY request_id"
-    ).fetchall()
-    assert all(r["n"] == 1 for r in rows)
+    assert calls
+    assert set(calls.values()) == {1}
+    assert set(calls) == {row["request_id"] for row in store.conn.execute("SELECT request_id FROM requests")}
 
 
-# ---------------------------------------------------------------------------
 # unrecoverable failure path
-# ---------------------------------------------------------------------------
 
 
 def test_dispatcher_marks_item_rejected_after_failure_cap(store, cfg, docs_dir):
     cfg.challenger.provider_model = "mock/disp_failing"
     cfg.dispatcher.max_request_failures = 2
     disp, _ = _seed_run(store, cfg, docs_dir)
-    # Run twice (so each request hits the failure cap)
     disp.run()
-    # After the first run, requests have failure_count=1, status='failed'.
-    # We restart the dispatcher; resume normalization reverts failed→pending.
-    # The second run drives failure_count to 2 → at cap.
+    # Resume retries the failed requests and drives them to the cap.
     disp2 = Dispatcher(
         store=store,
         llm=LLMClient(),
@@ -233,49 +226,38 @@ def test_dispatcher_marks_item_rejected_after_failure_cap(store, cfg, docs_dir):
     summary = disp2._summarize()
     assert summary.rejected == 2
     assert summary.accepted == 0
-    # Reasons should mention unrecoverable
     rows = store.conn.execute(
         "SELECT rejection_reasons FROM items WHERE rejection_reasons IS NOT NULL"
     ).fetchall()
     assert any("unrecoverable" in r["rejection_reasons"] for r in rows)
 
 
-# ---------------------------------------------------------------------------
 # budget abort
-# ---------------------------------------------------------------------------
 
 
 def test_dispatcher_aborts_when_budget_exceeded(store, cfg, docs_dir):
     cfg.budget_usd = 0.0001
     disp, _ = _seed_run(store, cfg, docs_dir)
-    # Pretend we've already spent 1.0 USD; first budget check aborts.
+    # Start above the configured budget.
     store.cost_so_far = lambda run_id: 1.0
     disp.run()
     run_row = store.get_run(cfg.run_id)
     assert run_row["status"] == "aborted"
 
 
-# ---------------------------------------------------------------------------
 # resume after kill
-# ---------------------------------------------------------------------------
 
 
 def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
     """Drive the dispatcher, kill it mid-flight, restart, finish."""
     disp, grounding = _seed_run(store, cfg, docs_dir)
-    # Run one advancement step's worth, then stop.
-    # The simplest way to "interrupt" is to set the stop flag after the first
-    # batch lands. We instead emulate kill by partially populating the store:
-    # call advance_one to emit challenger requests, leave them in_flight, then
-    # restart.
+    # Leave the first requests in flight to model a killed local worker.
     items_pending = store.items_pending_first_step(cfg.run_id)
     for row in items_pending:
         disp._advance_one(row)
-    # Now claim and process exactly one request, then simulate a crash by
-    # leaving the rest in 'in_flight'.
+    # Complete one request and leave the rest in flight.
     one = store.claim_pending(limit=1)
     if one:
-        # Mark it done with a fake response so we have at least partial state.
         from autosynth.llm import LLMRequest
 
         req = one[0]
@@ -293,7 +275,6 @@ def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
         store.insert_response(
             request_id=req.request_id, model=resp.model, text=resp.text, cost_usd=resp.cost_usd
         )
-    # Restart from scratch.
     disp2 = Dispatcher(
         store=store,
         llm=LLMClient(),
@@ -308,10 +289,7 @@ def test_dispatcher_resume_completes_partial_run(store, cfg, docs_dir):
 
 
 def test_hydration_reattaches_challenger_schema(store, cfg, docs_dir):
-    """A pending challenger request, once claimed and re-hydrated (the resume /
-    re-fulfill path), must carry the domain's strict payload schema. The schema
-    is never persisted, so it has to be rebuilt from role + domain — otherwise
-    strict shape enforcement would silently vanish on resume."""
+    """Rehydrated challenger requests must recover the domain payload schema."""
     from autosynth.dispatcher.hydration import row_to_llm_request
     from autosynth.domains.qa_from_documents import QAPayload
     from autosynth.llm.response_format import challenger_schema_for
@@ -321,25 +299,21 @@ def test_hydration_reattaches_challenger_schema(store, cfg, docs_dir):
         disp._advance_one(row)
     claimed = store.claim_pending(limit=10)
     challengers = [r for r in claimed if r.role == "challenger"]
-    assert challengers  # the first step emits one challenger request per item
+    assert challengers
     for req_row in challengers:
         assert row_to_llm_request(req_row, disp.domain).response_schema is challenger_schema_for(QAPayload)
-        # No domain (e.g. the batch transport, which sends plain JSON mode) → no schema.
+        # Batch transport intentionally uses plain JSON mode.
         assert row_to_llm_request(req_row).response_schema is None
 
 
 def test_resume_after_watermark_reset_is_idempotent(store, cfg, docs_dir):
-    """Simulate a crash mid-scoring followed by the v2->v3 migration: the item is
-    back in NEED_SCORES with its scores persisted and consumed_seq reset to 0, so
-    every solver/judge response re-delivers on resume. Re-ingest must be idempotent
-    (no duplicate scores) and the round must re-finalize to the same result."""
+    """Re-delivered scores after migration must remain idempotent."""
     disp, grounding = _seed_run(store, cfg, docs_dir)
-    assert disp.run().accepted == 2  # full run: scores + accepted records persisted
+    assert disp.run().accepted == 2
     scores_before = store.conn.execute("SELECT COUNT(*) FROM solver_scores").fetchone()[0]
     assert scores_before > 0
 
-    # Rewind to the migration's worst case: rounds un-finalized, items back in
-    # NEED_SCORES, every already-scored response re-deliverable (consumed_seq=0).
+    # Rewind to unfinalized scoring with every response deliverable again.
     with store.tx() as cur:
         cur.execute("DELETE FROM accepted")
         cur.execute("UPDATE rounds SET accepted = 0")
@@ -354,14 +328,13 @@ def test_resume_after_watermark_reset_is_idempotent(store, cfg, docs_dir):
         harness=DEFAULT_HARNESS,
         grounding=grounding,
     )
-    assert disp2.run().accepted == 2  # re-finalized from re-delivered, already-scored responses
-    assert store.conn.execute("SELECT COUNT(*) FROM solver_scores").fetchone()[0] == scores_before  # no dup
+    assert disp2.run().accepted == 2
+    assert store.conn.execute("SELECT COUNT(*) FROM solver_scores").fetchone()[0] == scores_before
     assert store.conn.execute("SELECT COUNT(*) FROM accepted").fetchone()[0] == 2
 
 
 def test_dispatcher_dead_letters_crashing_step(store, cfg, docs_dir, monkeypatch):
-    # A crashing step() must terminate the item, not re-qualify it forever: this
-    # test hangs on regression (livelock) instead of failing (C1).
+    # A deterministic step error must terminate instead of livelocking.
     def _boom(*_args, **_kwargs):
         raise RuntimeError("synthetic step crash")
 

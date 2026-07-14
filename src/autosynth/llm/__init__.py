@@ -1,18 +1,4 @@
-"""LLM client for the event-sourced pipeline.
-
-One class. Handles:
-
-  - provider routing (LiteLLM for real models, in-process mock for ``mock/*``)
-  - per-(provider, model) RPM rate limiting via a token bucket
-  - retries via tenacity (exponential backoff with jitter)
-  - cost accounting via :func:`litellm.completion_cost` (with per-model
-    overrides registered through :attr:`LLMConfig.prices`)
-
-The pipeline emits :class:`LLMRequest` objects; the dispatcher passes them
-to :meth:`LLMClient.complete`, which returns a :class:`Response`. Mock
-scenarios are registered via :func:`register_mock` and addressable as the
-``mock/<scenario>`` model string.
-"""
+"""LLM request types, client, rate limits, and mock providers."""
 
 from __future__ import annotations
 

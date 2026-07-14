@@ -1,8 +1,4 @@
-"""Wire types for LLM calls.
-
-Kept separate from the client so other subpackages (store, dispatcher) can
-import these without pulling in litellm or the mock registry.
-"""
+"""Wire types shared by the pipeline, dispatcher, and LLM client."""
 
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ from autosynth.utils import extract_json
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-Message = dict[str, str]  # {"role": "system|user|assistant", "content": "..."}
+Message = dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -25,7 +21,7 @@ class LLMRequest:
     item_id: str
     round_n: int
     role: str
-    model_key: str  # LiteLLM model string, e.g. "openai/gpt-4o-mini", "mock/happy"
+    model_key: str
     messages: list[Message]
     json_mode: bool = False
     attempt: int = 0

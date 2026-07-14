@@ -1,16 +1,4 @@
-"""Batch dispatcher: submit pending requests in chunks to provider batch APIs.
-
-Implements the ``fulfill`` strategy for ``Dispatcher`` that uses provider
-batch endpoints instead of streaming HTTP. The pipeline state machine is
-unchanged across the batch SLA; resume works because every request carries a
-deterministic ``request_id`` and the ``batch_id`` column tags in-flight batch
-submissions.
-
-The module defines a small :class:`BatchProvider` protocol, an in-process
-:class:`MockBatchProvider` for tests and demos, and :class:`LiteLLMBatchProvider`
-— the real OpenAI-style provider (upload file → create batch → poll → download)
-over LiteLLM, covering whatever LiteLLM's batch API supports.
-"""
+"""Submit and poll requests through provider batch APIs."""
 
 from __future__ import annotations
 
@@ -42,8 +30,7 @@ __all__ = [
     "poll_outstanding_batches",
 ]
 
-# OpenAI-style batch statuses we treat as terminal — once a batch reaches one,
-# polling stops and we fetch (or surface failure for) its requests.
+# Terminal OpenAI-style batch statuses.
 _BATCH_TERMINAL = frozenset({"completed", "failed", "expired", "cancelled"})
 
 
@@ -81,12 +68,7 @@ class BatchProvider(Protocol):
 
 
 class MockBatchProvider:
-    """In-process batch provider used by tests and demos.
-
-    ``submit`` synchronously calls ``LLMClient.complete`` per request and
-    stashes the results. They become visible to ``fetch`` only after the
-    caller has polled ``is_complete`` ``ready_after_polls`` times.
-    """
+    """In-process batch provider with configurable polling delay."""
 
     provider_name = "mock"
 
@@ -125,22 +107,7 @@ class MockBatchProvider:
 
 
 class LiteLLMBatchProvider:
-    """Real batch provider over LiteLLM's OpenAI-style batch API.
-
-    Covers any provider whose batch flow LiteLLM models as
-    upload-file → create-batch → poll → download-results (OpenAI, Azure,
-    Vertex, Bedrock, vLLM). Each :class:`LLMRequest` becomes one line of an
-    OpenAI ``/v1/chat/completions`` batch input file, keyed by ``custom_id``
-    so results map back to the originating request.
-
-    Stateless: the configured ``provider`` is the LiteLLM ``custom_llm_provider``
-    for every call, so a kill/resume mid-batch just re-polls by ``batch_id``. A
-    run uses one batch provider (``dispatcher.batch_provider``).
-
-    JSON-mode requests are submitted with plain ``{"type": "json_object"}``
-    rather than a strict response schema — the structured-output path isn't
-    wired through the batch file. The pipeline parses either shape.
-    """
+    """OpenAI-style batch flow implemented through LiteLLM."""
 
     provider_name = "litellm"
 
@@ -186,8 +153,7 @@ class LiteLLMBatchProvider:
 
 
 def _load_litellm() -> Any:
-    """Lazy import: litellm is a ~2s import, kept off the dispatcher's import path
-    (loaded once on first batch call, then cached)."""
+    """Import LiteLLM only when the first batch call needs it."""
     import litellm
 
     return litellm
@@ -266,19 +232,7 @@ def _completion_cost(model: str, pt: int | None, ct: int | None) -> float | None
 
 
 class AnthropicBatchProvider:
-    """Batch provider for Anthropic's native Message Batches API.
-
-    Anthropic's batch flow isn't OpenAI-file-shaped — requests are submitted
-    inline (no upload) as Messages API params, polled via ``processing_status``,
-    and results pulled from a ``results_url``. LiteLLM's unified ``create_batch``
-    doesn't model that, so this talks to the REST endpoints directly (stdlib
-    HTTP). ``_create_batch``/``_retrieve_batch``/``_download_results`` are the
-    only network surface — stubbed in tests.
-
-    ``ANTHROPIC_API_KEY`` is read from the environment unless ``api_key`` is
-    passed. JSON-mode requests rely on the prompt (Anthropic has no
-    ``response_format`` knob); cost is litellm's list price (no batch discount).
-    """
+    """Anthropic's native Message Batches API over its REST endpoints."""
 
     provider_name = "anthropic"
 
@@ -312,7 +266,7 @@ class AnthropicBatchProvider:
     def fetch(self, batch_id: str) -> Iterable[BatchResult]:
         results_url = self._retrieve_batch(batch_id).get("results_url")
         if not results_url:
-            return []  # ended without results (e.g. all cancelled) — the poller reconciles tagged requests
+            return []  # The poller reconciles requests missing from the result set.
         results: list[BatchResult] = []
         for line in self._download_results(results_url).splitlines():
             line = line.strip()
@@ -320,7 +274,7 @@ class AnthropicBatchProvider:
                 results.append(_anthropic_result_to_result(json.loads(line)))
         return results
 
-    # --- network seam (stubbed in tests) ---------------------------------
+    # Network methods are stubbed in tests.
 
     def _create_batch(self, payload: dict) -> dict:
         return json.loads(self._http("POST", f"{self.api_base}/v1/messages/batches", payload))
@@ -355,7 +309,7 @@ def _to_anthropic_request(req: LLMRequest, max_tokens_default: int) -> dict:
     system = [m["content"] for m in req.messages if m.get("role") == "system"]
     params: dict[str, Any] = {
         "model": _model_name(req.model_key),
-        "max_tokens": req.max_tokens or max_tokens_default,  # required by the Messages API
+        "max_tokens": req.max_tokens or max_tokens_default,
         "messages": [m for m in req.messages if m.get("role") != "system"],
     }
     if system:
@@ -395,15 +349,12 @@ def _anthropic_result_to_result(line: dict) -> BatchResult:
 
 
 def make_fulfill_batch(provider: BatchProvider):
-    """Build a ``fulfill`` callable bound to a specific :class:`BatchProvider`.
-
-    Plug into ``Dispatcher(..., fulfill=make_fulfill_batch(provider))``.
-    """
+    """Build a fulfillment callback bound to one batch provider."""
 
     def _fulfill(requests: list[RequestRow], dispatcher) -> None:
         if not requests:
             return
-        # Different providers can't share a batch; group by provider prefix.
+        # Provider APIs cannot mix models from different providers.
         groups: dict[str, list[RequestRow]] = defaultdict(list)
         for r in requests:
             groups[_provider_of(r.model_key)].append(r)
@@ -429,10 +380,7 @@ def make_fulfill_batch(provider: BatchProvider):
 
 
 def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
-    """Poll any batches the dispatcher's store has tagged as in-flight.
-
-    Returns the number of newly-completed requests.
-    """
+    """Poll in-flight batches and return the number of completed requests."""
     store: Store = dispatcher.store
     completed = 0
     cap = dispatcher.cfg.dispatcher.max_request_failures
@@ -443,7 +391,7 @@ def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
         except Exception as e:
             logger.warning("poll error for batch {}: {}", batch_id, e)
             continue
-        # Snapshot what's tagged so we can reconcile anything the fetch omits.
+        # Reconcile requests omitted from partial or failed batch output.
         tagged = set(store.request_ids_for_batch(batch_id))
         try:
             results = list(provider.fetch(batch_id))
@@ -452,7 +400,7 @@ def poll_outstanding_batches(provider: BatchProvider, dispatcher) -> int:
             continue
         seen: set[str] = set()
         for br in results:
-            # Safe to skip: in-flight requests are always tagged, so the sweep below catches any we drop.
+            # Tagged requests are reconciled below.
             if br.request_id not in tagged:
                 logger.warning("batch {} returned untagged request {!r}; skipping", batch_id, br.request_id)
                 continue

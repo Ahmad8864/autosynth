@@ -1,15 +1,14 @@
-# Architecture & internals
+# Architecture and internals
 
-Deeper reference than the [README](../README.md) — the runtime model, the item state
-machine, how acceptance is decided, the run database, the meta-optimization loop, and batch
-mode. Exact values (thresholds, defaults) are not transcribed here; they live in code, and
-this doc points at the source so it can't drift.
+This document covers the runtime, item states, acceptance policies, run database,
+meta-optimization, and batch dispatch. Configuration defaults remain in code so this guide
+does not become a second source of truth.
 
 ## Runtime
 
-An event-sourced pipeline over a SQLite database. A pure `step()` function advances item
-state; the dispatcher fulfills LLM requests and writes the responses back; the store is the
-durable record.
+autosynth uses an event-sourced pipeline backed by SQLite. The pure `step()` function advances
+an item from its current state and returns any new LLM requests. The dispatcher fulfills those
+requests, and the store records each transition and response.
 
 ```
 pipeline.step()        pure state machine: (state, responses) -> (state, requests)
@@ -20,101 +19,108 @@ store                  SQLite + WAL, one run.db per run
 llm                    provider routing, rate-limit, retry, cost accounting
 ```
 
-The fact that `step()` is pure is the only reason resume works. Kill the process at any
-point — including mid-batch — and `autosynth resume` picks up exactly where it left off.
-In-flight local requests revert to pending; in-flight batch requests stay tagged and get
-polled.
+Purity keeps state transitions deterministic, while persisted requests and responses make
+resume possible. After a restart, local in-flight requests return to pending. Batch requests
+keep their batch IDs and resume polling.
 
 ## Item state machine
 
 ```
-PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES → [NEED_AUDIT] → ACCEPTED
-                                              │
-                                              └─ NEED_REFLECTION → (next round) ─┐
-                                                                                 │
-                              ACCEPTED / REJECTED are terminals  ◄───────────────┘
+PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES
+              ↑                              │
+              │                    [NEED_DECISION]
+              │                              │
+              └─ NEED_REFLECTION ← improve ──┤
+                                             │
+                                      [NEED_AUDIT] → ACCEPTED
+                                             │
+                                      audit failure
+
+REJECTED is terminal when the round limit or a fatal error is reached.
 ```
 
-`NEED_SCORES` fans out `N × weak + N × strong` solver requests in parallel; each judge fires
-the moment its solver lands. Concurrency is bounded by `cfg.dispatcher.concurrency`. The
-state enum and transitions live in `src/autosynth/pipeline.py`; `test_pure_pipeline.py` is
-exhaustive coverage, including the partial-completion no-op invariant.
+`NEED_DECISION` is used only by judge-driven acceptance, and `NEED_AUDIT` only when final
+auditing is enabled. Judge feedback can start the next challenger round directly without a
+reflection request.
+
+Without short-circuiting, `NEED_SCORES` emits all weak and strong solver requests together.
+With `loop.short_circuit_strong`, it emits weak requests first and releases strong requests
+only after the weak gate passes. Rubric judges are requested as solver responses arrive.
+`cfg.dispatcher.concurrency` bounds concurrent work. State definitions and transitions live
+in [`pipeline.py`](../src/autosynth/pipeline.py).
 
 ## Acceptance
 
-For each source item, autosynth runs the five-step loop (challenger → quality → weak/strong
-solvers → judge → evaluator, then reflector on reject) until the candidate is accepted or
-`loop.max_rounds` is exhausted. Three regimes decide acceptance, selected by
-`acceptance.mode` (or the domain's `default_acceptance_mode`):
+`acceptance.mode` selects one of three policies. If unset, the domain's
+`default_acceptance_mode` is used.
 
-- **rubric** (default) — the judge scores each rollout against the rubric; acceptance is a
-  threshold-and-gap test (weak must stay low, strong must clear a floor without being "too
-  easy", and the strong−weak gap must exceed a minimum).
-- **verifiable** — the domain's `verify()` checks each rollout programmatically; the judge is
-  skipped and acceptance is a count gate: *weak must fail, strong must succeed.*
-- **judge** — after the rubric judge scores every rollout, a loop-judge LLM reads the
-  per-rollout weak/strong patterns and decides accept/improve each round, supplying the next
-  round's suggestion directly (the reflector is skipped).
+- **rubric** (default) — a judge scores each attempt. Fixed thresholds check weak performance,
+  strong performance, and the gap between them.
+- **verifiable** — `DomainAdapter.verify()` checks attempts in process. No rubric judge is
+  called; correct-answer counts determine acceptance.
+- **judge** — attempts are rubric-scored, then a loop judge decides whether to accept or
+  improve the candidate. Its feedback goes directly to the next challenger round.
 
-**Exact default thresholds and knobs** (`weak_avg_max`, `min_gap`, `verifiable_*`, the
-rubric weight cap, …) are fields of `AcceptanceConfig` in `src/autosynth/config.py` — that
-model's defaults and docstring are the source of truth; calibration notes map each to the
-paper. The decision logic itself is `src/autosynth/acceptance.py`.
+The current thresholds and limits are fields on
+[`AcceptanceConfig`](../src/autosynth/config.py). Policy logic lives in
+[`acceptance.py`](../src/autosynth/acceptance.py).
 
-**Conditional strong eval (cost saver).** `loop.short_circuit_strong: true` runs the weak
-solver first and only scores the strong solver when the weak gate passes (the example is hard
-enough), skipping strong + judge calls on the easy majority at the cost of serializing the
-round. Off by default; leave it off under `judge` mode, where it only adds serialization
-without skipping anything.
+### Conditional strong evaluation
 
-**Independent final audit.** `audit.enabled: true` routes a round that passes acceptance (any
-mode) through `NEED_AUDIT` before `ACCEPTED`: one further LLM call — the paper's post-loop
-quality verifier — re-checks the candidate with what the pre-solve quality stage never sees,
-the grounding source and the scored rollouts. On fail, the audit failures become next-round
-challenger feedback, subject to `loop.max_rounds`. The `auditor` model defaults to `judge`;
-the prompt and harness rules are overridable (`DomainAdapter.audit_prompt`, `audit_rules`).
+`loop.short_circuit_strong: true` runs weak attempts first. If they show that the example is
+too easy, the round skips strong attempts and proceeds to improvement. This saves strong-model
+and judge calls but adds another sequential stage to the round. It is enabled by default.
+
+Judge mode has no separate weak threshold, so short-circuiting does not skip work there;
+disable it if the added serialization is not useful.
+
+### Final audit
+
+With `audit.enabled: true`, a passing round enters `NEED_AUDIT` before acceptance. The auditor
+can inspect the grounding source and scored attempts, which are not available to the earlier
+quality check. Audit failures become challenger feedback for another round, subject to
+`loop.max_rounds`.
+
+The auditor uses the judge model by default. Configure `auditor` to use another model, override
+`DomainAdapter.audit_prompt()` for a domain-specific prompt, or add harness `audit_rules`.
 
 ## Run database
 
 Everything for a run lives under `outputs/<run_id>/`:
 
-- `run.db` — SQLite + WAL. Queryable with the `sqlite3` CLI and safe to share.
+- `run.db` — SQLite + WAL and the source of truth for the run.
 - `config.snapshot.yaml` — the exact config used. Resume reads this if you don't pass `--config`.
 - `accepted.jsonl` / `hf_export/` — produced on `autosynth export`, not written automatically.
 
-The authoritative schema is the database itself — `sqlite3 outputs/<run_id>/run.db .schema`,
-generated from `src/autosynth/store/schema.py`. At time of writing the tables are `runs`,
-`items`, `rounds`, `requests`, `responses`, `solver_scores`, and `accepted`. Each accepted
-record carries `input`, `reference_output`, `rubric`, `domain`, `source_id`, `metadata`, the
-weak/strong/gap scores, per-attempt solver scores, the acceptance rationale, and the final-audit
-verdict when the audit is enabled; the exact serialization is `DomainAdapter.format_accepted`
-(`src/autosynth/domain.py`).
+The schema is defined in [`store/schema.py`](../src/autosynth/store/schema.py) and can be
+inspected with `sqlite3 outputs/<run_id>/run.db .schema`. Current tables are `runs`, `items`,
+`rounds`, `requests`, `responses`, `solver_scores`, and `accepted`.
 
-`test_store.py` covers `claim_pending` atomicity under threads and resume normalization;
-`test_dispatcher.py` covers end-to-end accept, concurrent fulfill, budget abort, and
-kill/resume.
+Accepted records include the domain payload, reference output, rubric, source metadata,
+weak/strong summaries, per-attempt scores, and acceptance rationale. When enabled, the final
+audit verdict is included as well. Domains can change the exported shape through
+`DomainAdapter.format_accepted()`.
 
 ## Meta-optimization
 
-`autosynth metaopt` runs the paper's secondary loop: evolve the orchestrator's *prompts* over
-generations. The unit of evolution is a `HarnessSpec` — a structured bag of rule strings
-injected into each agent's system prompt, plus a couple of numeric knobs
-(`src/autosynth/harness.py`, `src/autosynth/metaopt/`).
+`autosynth metaopt` evolves a `HarnessSpec`: role-specific instruction lists plus a small set
+of structural settings. Harness rules are appended to each agent's system prompt. The model
+and implementation live in [`harness.py`](../src/autosynth/harness.py) and
+[`metaopt/`](../src/autosynth/metaopt/).
 
-The loop, roughly:
+The loop is:
 
-1. Score the seed harness on training and validation source items.
-2. Each iteration: Boltzmann-sample a parent from the population (T=0.1 over training scores),
-   summarize that parent's most recent rejection reasons, ask the mutator LLM for a structured
-   diff, apply it, dedupe, and re-evaluate.
-3. Accept the mutation only if `child.val > parent.val` — the paper's gate. Gating is on
-   validation score alone, and repeated evaluations of a candidate are averaged so acceptance
-   isn't decided by a single noisy run.
+1. Evaluate the seed harness on training and validation items.
+2. Select an accepted parent with Boltzmann sampling over mean validation scores.
+3. Summarize failures from the parent's latest training run and ask the mutator for a structured
+   edit.
+4. Evaluate the child on training and validation items.
+5. Accept the child only when its validation score exceeds the parent's running validation mean.
 
-Mutations operate on the harness, not on Python source — that preserves the main lever the
-paper exercises (prompt-text edits) without the sandboxing headache of a code-editing agent.
-Swap in your own mutator for richer edits. Population, lineage, and per-iteration decisions
-are written under `outputs/metaopt/<run_id>/iterations/`.
+Re-evaluated parent scores are averaged to reduce the effect of a single noisy run. Training
+results provide failure examples but do not decide acceptance. Mutations change the harness,
+not Python source. Population, lineage, and per-iteration decisions are written under
+`outputs/metaopt/<run_id>/iterations/`.
 
 To run for real, add `metaopt: { enabled: true, max_iterations: 50, ... }` to your config and
 point `metaopt.mutator` at a strong reasoning model. Meta-opt reuses your existing `domain`,
@@ -122,31 +128,30 @@ point `metaopt.mutator` at a strong reasoning model. Meta-opt reuses your existi
 
 ## Batch mode
 
-The dispatcher can submit requests through provider batch APIs for the ~50% cost discount
-instead of streaming them over HTTP. Enable it with `dispatcher.mode: batch` (and
-`batch_provider: mock` for an offline run).
+The dispatcher can submit requests through provider batch APIs instead of sending them
+immediately. Batch pricing is often lower, but discounts and completion windows depend on the
+provider. Enable it with `dispatcher.mode: batch`; use `batch_provider: mock` for an offline
+run.
 
-`mode: batch` swaps the dispatcher's fulfill strategy: pending requests are grouped by provider,
-submitted as a batch, then polled each loop tick until the provider marks them done. The state
-machine is unchanged across the SLA wait, so kill/resume works mid-batch — resume re-polls the
-batches still tagged in-flight.
+In batch mode, pending requests are grouped, submitted, and polled until the provider marks
+them complete. The pipeline state machine does not change while the provider is processing a
+batch. On resume, requests with a batch ID continue polling.
 
-Three providers implement the `BatchProvider` protocol in `src/autosynth/dispatcher/batch.py`;
-see the class docstrings for the wire detail:
+Three implementations of `BatchProvider` live in
+[`dispatcher/batch.py`](../src/autosynth/dispatcher/batch.py):
 
-- **`LiteLLMBatchProvider`** (`batch_provider: openai`, default) — the OpenAI-style
-  upload → create → poll → download flow over LiteLLM; covers whatever LiteLLM's batch API
-  supports.
+- **`LiteLLMBatchProvider`** (`batch_provider: openai`, default) — an OpenAI-style
+  upload, create, poll, and download flow through LiteLLM.
 - **`AnthropicBatchProvider`** (`batch_provider: anthropic`) — Anthropic's native Message
-  Batches API, which LiteLLM's unified `create_batch` doesn't model, so it calls the REST
-  endpoints directly.
+  Batches REST API.
 - **`MockBatchProvider`** (`batch_provider: mock`) — in-process, for tests and offline demos.
 
-Any request a terminal batch returns no result for is failed, so a partial or failed batch can't
-strand the run.
+If a completed batch omits a tagged request, that request is failed and can retry or reach its
+failure cap. It is not left in flight indefinitely.
 
-**Limits:** JSON-mode requests go through plain provider JSON mode (OpenAI `{"type":
-"json_object"}`; on Anthropic the prompt alone, as it has no `response_format` knob), not a strict
-schema. Per-request cost is best-effort — litellm's list price, so the batch discount isn't
-subtracted and budget enforcement over-estimates (stopping early, not overshooting). A run assumes
-a single batch provider.
+### Batch limits
+
+Batch requests use plain JSON mode rather than strict response schemas. OpenAI-style providers
+receive `{"type": "json_object"}`; Anthropic relies on the prompt because its Messages API has
+no `response_format` parameter. Per-request cost uses LiteLLM list prices and does not subtract
+batch discounts, so budget checks may stop early. A run assumes one batch provider.

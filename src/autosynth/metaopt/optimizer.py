@@ -1,11 +1,4 @@
-"""MetaOptimizer: the evolutionary loop over HarnessSpecs.
-
-For each iteration: pick a parent by Boltzmann sampling on its *mean*
-validation score, re-evaluate that parent on val (accumulating samples, capped)
-so the gate compares against a stable mean, ask the mutator LLM for a diff,
-evaluate the child on train (for failure analysis) and val, and accept only if
-the child's val score exceeds the parent's val mean.
-"""
+"""Evolutionary loop over harness specifications."""
 
 from __future__ import annotations
 
@@ -42,9 +35,7 @@ class MetaOptimizer:
         write_yaml_snapshot(self.root / "config.snapshot.yaml", self.cfg)
 
         self.seed_harness = seed_harness or self._load_seed()
-        # Mutator client; falls back to the orchestrator's model. The mutator
-        # should ideally be a stronger reasoning model than the orchestrator
-        # (the paper relies on this), so warn loudly when the fallback kicks in.
+        # A stronger mutator is preferred, so make the fallback visible.
         if self.meta.mutator is None:
             logger.warning(
                 "metaopt.mutator not set; falling back to orchestrator model — "
@@ -63,19 +54,14 @@ class MetaOptimizer:
             max_tokens=mutator_cfg.max_tokens,
         )
 
-        # Compute deterministic train/val split.
         self.train_ids, self.val_ids = self._split_grounding()
 
         self.population: list[HarnessRecord] = []
         self.iterations: list[MetaIteration] = []
-        # Where the most recent training run for each harness lives (used for
-        # failure aggregation in the next iteration).
+        # Latest training runs provide failure examples for later mutations.
         self._last_train_run_dir: dict[str, Path] = {}
 
-    # ---- main loop ---------------------------------------------------------
-
     def run(self) -> dict[str, Any]:
-        # 1. Evaluate the seed
         seed_train_rate, _ = self._eval(self.seed_harness, "train", iter_n=0)
         seed_val_rate, _ = self._eval(self.seed_harness, "val", iter_n=0)
         self.seed_harness.train_score = seed_train_rate
@@ -92,7 +78,6 @@ class MetaOptimizer:
         self._save_state(iter_n=0)
         logger.info("[meta] seed harness: train={:.3f} val={:.3f}", seed_train_rate, seed_val_rate)
 
-        # 2. Iterate
         for it in range(1, self.meta.max_iterations + 1):
             parent = boltzmann_select(self.population, self.meta.boltzmann_temp, self.rng)
             iter_dir = self.root / "iterations" / f"iter_{it:03d}"
@@ -106,7 +91,6 @@ class MetaOptimizer:
                 parent.val_scores.append(parent_val)
                 parent.val_score = parent_val
 
-            # Collect failures from the parent's most recent training run.
             failure_summary = self._collect_failures(parent.spec)
             write_json(iter_dir / "failure_summary.json", failure_summary)
 
@@ -165,21 +149,18 @@ class MetaOptimizer:
 
             self._save_state(iter_n=it)
 
-        # Final state
         best = self._best()
         write_pydantic(self.root / "best_harness.json", best.spec)
         return {
             "run_id": self.run_id,
             "iterations": len(self.iterations),
             "population_size": len(self.population),
-            "accepted_mutations": sum(1 for r in self.population if r.accepted) - 1,  # -1 for seed
+            "accepted_mutations": sum(1 for r in self.population if r.accepted) - 1,
             "best_harness_id": best.spec.harness_id,
             "best_train": best.train_score,
             "best_val": best.val_mean,
             "output_dir": str(self.root),
         }
-
-    # ---- helpers -----------------------------------------------------------
 
     def _load_seed(self) -> HarnessSpec:
         if self.meta.seed_harness_path:
@@ -189,7 +170,6 @@ class MetaOptimizer:
     def _split_grounding(self) -> tuple[list[str], list[str]]:
         domain = build_domain(self.cfg.domain.name, self.cfg.domain.path, self.cfg.domain.params)
         items = list(domain.load_grounding())
-        # Deterministic shuffle.
         rng = random.Random(self.meta.val_seed)
         ids = [i.source_id for i in items]
         rng.shuffle(ids)

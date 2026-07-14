@@ -25,7 +25,7 @@ def _score(solver: str, vals: list[float], correct: list[bool | None] | None = N
     return out
 
 
-# --- rubric-gap regime (evaluate / ThresholdPolicy) ------------------------
+# Rubric-gap acceptance
 
 
 def test_accept_paper_defaults():
@@ -136,7 +136,7 @@ def test_report_std_zero_for_single_rollout():
     assert rep.weak_std == 0.0 and rep.strong_std == 0.0
 
 
-# --- verifiable regime (VerifiablePolicy) ----------------------------------
+# Verifiable acceptance
 
 
 def _verifiable_policy(**kw) -> VerifiablePolicy:
@@ -144,7 +144,6 @@ def _verifiable_policy(**kw) -> VerifiablePolicy:
 
 
 def test_verifiable_accepts_weak_fail_strong_succeed():
-    # paper §3.3: weak ≤1/4 correct, strong ≥3/4 correct
     rep = _verifiable_policy().evaluate(
         _score("weak", [1.0, 0.0, 0.0, 0.0]),
         _score("strong", [1.0, 1.0, 1.0, 0.0]),
@@ -156,7 +155,7 @@ def test_verifiable_accepts_weak_fail_strong_succeed():
 
 def test_verifiable_rejects_weak_too_capable():
     rep = _verifiable_policy().evaluate(
-        _score("weak", [1.0, 1.0, 0.0, 0.0]),  # 2/4 > 1
+        _score("weak", [1.0, 1.0, 0.0, 0.0]),
         _score("strong", [1.0, 1.0, 1.0, 1.0]),
         QualityCheck(passed=True),
     )
@@ -167,7 +166,7 @@ def test_verifiable_rejects_weak_too_capable():
 def test_verifiable_rejects_strong_too_weak():
     rep = _verifiable_policy().evaluate(
         _score("weak", [0.0, 0.0, 0.0, 0.0]),
-        _score("strong", [1.0, 1.0, 0.0, 0.0]),  # 2/4 < 3
+        _score("strong", [1.0, 1.0, 0.0, 0.0]),
         QualityCheck(passed=True),
     )
     assert not rep.accepted
@@ -185,7 +184,7 @@ def test_verifiable_rejects_on_quality():
 
 
 def test_verifiable_gate_reads_total_not_correct():
-    # correct=None on an unverifiable attempt must not break the gate (no TypeError)
+    # An unverifiable attempt counts as incorrect.
     rep = _verifiable_policy().evaluate(
         _score("weak", [0.0, 0.0, 0.0, 0.0], correct=[None, None, False, False]),
         _score("strong", [1.0, 1.0, 1.0, 0.0], correct=[True, True, True, None]),
@@ -194,19 +193,19 @@ def test_verifiable_gate_reads_total_not_correct():
     assert rep.accepted, rep.rejection_reasons
 
 
-# --- weak gate (short-circuit strong evaluation) ---------------------------
+# Weak gate for short-circuit evaluation
 
 
 def test_threshold_weak_gate_passes_when_weak_appropriately_fails():
     pol = ThresholdPolicy(AcceptanceConfig(forbid_weak_zero=False))
     assert pol.weak_gate_passes(_score("weak", [0.2, 0.3])) is True
-    assert pol.weak_gate_passes(_score("weak", [0.7, 0.8])) is False  # too capable
+    assert pol.weak_gate_passes(_score("weak", [0.7, 0.8])) is False
 
 
 def test_verifiable_weak_gate_passes_on_count():
-    pol = _verifiable_policy()  # verifiable_weak_max_correct=1
-    assert pol.weak_gate_passes(_score("weak", [1.0, 0.0, 0.0, 0.0])) is True  # 1 <= 1
-    assert pol.weak_gate_passes(_score("weak", [1.0, 1.0, 0.0, 0.0])) is False  # 2 > 1
+    pol = _verifiable_policy()
+    assert pol.weak_gate_passes(_score("weak", [1.0, 0.0, 0.0, 0.0])) is True
+    assert pol.weak_gate_passes(_score("weak", [1.0, 1.0, 0.0, 0.0])) is False
 
 
 def test_base_weak_gate_defaults_true():
@@ -217,10 +216,11 @@ def test_weak_gate_report_is_explicit_and_strongless():
     rep = weak_gate_report(_score("weak", [0.7]))
     assert rep.accepted is False
     assert any("short_circuit" in r for r in rep.rejection_reasons)
-    assert rep.strong_scores == []  # no strong rollouts -> reflector won't mislabel failed_strong
+    # Missing strong attempts should not look like a strong-solver failure.
+    assert rep.strong_scores == []
 
 
-# --- judge regime (JudgePolicy) --------------------------------------------
+# Judge-driven acceptance
 
 
 def test_judge_policy_flags():
@@ -246,7 +246,7 @@ def test_judge_policy_decide_improve_carries_suggestion():
 
 
 def test_judge_policy_improve_feedback_never_empty():
-    # Empty suggestion must still yield non-empty feedback (no guidance-less retry).
+    # Keep retries actionable even when the judge omits its suggestion.
     v = LoopJudgeVerdict(accept=False, grpo_suitability="low", reason="", suggestion="")
     d = JudgePolicy(AcceptanceConfig()).decide(v, [], [], QualityCheck(passed=True))
     assert d.report.accepted is False and d.feedback and d.feedback[0]
@@ -258,10 +258,10 @@ def test_parse_verdict_improve_accept_and_fallback():
     )
     assert v.accept is False and v.suggestion == "s"
     assert parse_verdict('{"verdict": "accept"}').accept is True
-    assert parse_verdict("not json").accept is False  # malformed -> defaults to improve
+    assert parse_verdict("not json").accept is False
 
 
-# --- resolve_policy --------------------------------------------------------
+# Policy resolution
 
 
 def _cfg(domain_name: str, *, mode=None, weak=4, strong=4, **acc) -> RunConfig:
@@ -280,7 +280,6 @@ def test_resolve_policy_uses_domain_default():
 
 
 def test_resolve_policy_config_overrides_domain():
-    # force the verifiable math domain into rubric mode
     pol = resolve_policy(_cfg("math_word_problems", mode="rubric"), MathWordProblems())
     assert isinstance(pol, ThresholdPolicy)
 
@@ -334,7 +333,7 @@ def test_resolve_policy_rejects_vacuous_weak_gate():
 
 
 def test_resolve_policy_warns_on_forced_perfection():
-    # default counts (1,3) against N=3 forces a perfect 3/3 strong -> warn, not error
+    # With three strong samples, the default minimum requires a perfect result.
     msgs: list[str] = []
     sink_id = logger.add(msgs.append, level="WARNING")
     try:

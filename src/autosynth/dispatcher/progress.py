@@ -1,16 +1,4 @@
-"""Live progress bar for the dispatcher's main loop.
-
-A thin context-managed wrapper around :class:`rich.progress.Progress`.
-The bar tracks terminal items (accepted + rejected) out of the total
-seeded grounding count, with side fields for in-flight requests and
-cumulative cost.
-
-It auto-disables when stderr is not a terminal (CI, redirected output,
-test runs) so non-interactive logs stay clean. When active, it shares
-its console with :mod:`autosynth.cli`'s loguru sink — rich's underlying
-``Live`` display keeps the bar pinned beneath any log lines that scroll
-past.
-"""
+"""Live dispatcher progress, disabled for non-interactive output."""
 
 from __future__ import annotations
 
@@ -30,12 +18,7 @@ from autosynth._console import STDERR_CONSOLE
 
 
 class DispatcherProgress:
-    """Context-managed counters for one dispatcher run.
-
-    The bar is a no-op when ``total`` is zero or when stderr isn't a
-    terminal, so callers can wrap the loop unconditionally without
-    paying a render cost in non-interactive contexts.
-    """
+    """Context-managed progress counters for one run."""
 
     def __init__(self, *, total: int) -> None:
         self._total = total

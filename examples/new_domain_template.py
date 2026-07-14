@@ -25,7 +25,7 @@ class MyDomain(DomainAdapter):
         super().__init__(**params)
 
     def load_grounding(self) -> Iterable[GroundingItem]:
-        # Yield one GroundingItem per source unit (paper, ticket, function, ...).
+        # Yield one item per paper, ticket, function, or other source unit.
         yield GroundingItem(source_id="example-1", body="some seed text", metadata={})
 
     def generation_prompt(self, item, feedback, round_n, prior_payloads):

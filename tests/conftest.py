@@ -36,9 +36,7 @@ def script_mock() -> Callable[[str, Callable], None]:
     return _register
 
 
-# ---------------------------------------------------------------------------
-# A "happy path" mock that always accepts on round 1, used by the loop tests.
-# ---------------------------------------------------------------------------
+# Mock that accepts on the first round
 
 
 def _happy_handler(role: str, messages):
@@ -60,8 +58,7 @@ def _happy_handler(role: str, messages):
         )
     if role == "reflector" or "ROLE:REFLECTION" in all_text:
         return json.dumps({"feedback": ["try harder"], "new_angle": "x"})
-    # Quality and judging both use the same "judge" role on the LLMClient, so we
-    # must disambiguate by prompt content — quality first.
+    # Quality and scoring share the judge client role.
     if "ROLE:QUALITY" in all_text:
         return json.dumps({"passed": True, "failures": [], "notes": "ok"})
     if "ROLE:JUDGE" in all_text or role == "judge":
@@ -78,9 +75,7 @@ def _happy_handler(role: str, messages):
 register_mock("happy", _happy_handler)
 
 
-# ---------------------------------------------------------------------------
-# A mock that always rejects, used to exercise refine/exhaust paths.
-# ---------------------------------------------------------------------------
+# Mock that always rejects
 
 
 def _reject_handler(role: str, messages):
@@ -94,7 +89,6 @@ def _reject_handler(role: str, messages):
             }
         )
     if "ROLE:QUALITY" in last_user:
-        # Always fail quality so no eval is run.
         return json.dumps({"passed": False, "failures": ["context_leaks_answer"], "notes": "bad"})
     if "ROLE:REFLECTION" in last_user:
         return json.dumps({"feedback": ["fix leakage"], "new_angle": "different"})

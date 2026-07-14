@@ -1,13 +1,4 @@
-"""SQLite-backed store for an autosynth run.
-
-One ``run.db`` per run. WAL mode, synchronous=NORMAL, foreign keys on.
-All write operations go through :py:meth:`Store.tx` which takes the write
-lock and a BEGIN IMMEDIATE transaction.
-
-The schema is the canonical record of a run — the database *is* the run.
-JSONL and HF exports are produced lazily from ``accepted`` rows via
-:py:meth:`Store.export_jsonl` / :py:meth:`Store.export_hf`.
-"""
+"""Thread-safe SQLite data access for one autosynth run."""
 
 from __future__ import annotations
 
@@ -42,12 +33,7 @@ from autosynth.utils import stable_id
 
 
 class Store:
-    """Thread-safe SQLite DAO for one run.
-
-    A single connection is shared across threads with check_same_thread=False;
-    writes are serialized via an RLock. With one shared connection, reads are
-    serialized by SQLite's connection mutex (not WAL snapshot isolation).
-    """
+    """One shared SQLite connection with serialized writes."""
 
     def __init__(self, db_path: Path | str):
         if sqlite3.sqlite_version_info < (3, 35):
@@ -68,9 +54,7 @@ class Store:
         with self._lock:
             self.conn.close()
 
-    # ------------------------------------------------------------------
     # Schema
-    # ------------------------------------------------------------------
 
     def _migrate(self) -> None:
         with self._lock:
@@ -107,9 +91,7 @@ class Store:
                 self.conn.rollback()
                 raise
 
-    # ------------------------------------------------------------------
     # Runs
-    # ------------------------------------------------------------------
 
     def create_run(
         self, run_id: str, *, config: Any, harness: Any = None, cost_usd_cap: float | None = None
@@ -143,9 +125,7 @@ class Store:
         with self.tx() as cur:
             cur.execute("UPDATE runs SET last_active_at=? WHERE run_id=?", (_utcnow(), run_id))
 
-    # ------------------------------------------------------------------
     # Items
-    # ------------------------------------------------------------------
 
     def insert_item(
         self, *, run_id: str, source_id: str, domain: str, state: str, source_metadata: dict | None = None
@@ -172,13 +152,7 @@ class Store:
         rejection_reasons: list[str] | None = None,
         consumed_seq: int | None = None,
     ) -> None:
-        """Update an item row.
-
-        ``updated_at`` is always refreshed to ``_utcnow()`` (a cosmetic
-        timestamp). The dispatcher passes ``consumed_seq`` — the max
-        responses.rowid just consumed — to advance the watermark; it is left
-        unchanged when None (e.g. a terminal REJECT that consumed no responses).
-        """
+        """Update an item and optionally advance its response watermark."""
         sets: list[str] = ["updated_at = ?"]
         vals: list[Any] = [_utcnow()]
         if consumed_seq is not None:
@@ -256,9 +230,7 @@ class Store:
         ).fetchone()
         return row is not None
 
-    # ------------------------------------------------------------------
     # Rounds
-    # ------------------------------------------------------------------
 
     @staticmethod
     def round_id(item_id: str, round_n: int) -> str:
@@ -333,17 +305,10 @@ class Store:
             "SELECT * FROM rounds WHERE item_id=? AND round_n=?", (item_id, round_n)
         ).fetchone()
 
-    # ------------------------------------------------------------------
     # Requests
-    # ------------------------------------------------------------------
 
     def insert_requests(self, requests: Iterable[dict]) -> int:
-        """Bulk-insert requests, all in 'pending' status.
-
-        Required keys: request_id, item_id, round_n, role, model_key, attempt,
-        messages, json_mode. Optional: parent_response_id, temperature,
-        max_tokens.
-        """
+        """Insert requests in the pending state."""
         rows = list(requests)
         if not rows:
             return 0
@@ -375,10 +340,7 @@ class Store:
         return len(rows)
 
     def claim_pending(self, limit: int, *, batch_id: str | None = None) -> list[RequestRow]:
-        """Atomically transition up to `limit` pending requests to in_flight.
-
-        Returns the claimed rows. With `batch_id`, also tags them for batch dispatch.
-        """
+        """Claim up to ``limit`` pending requests, optionally for a batch."""
         now = _utcnow()
         with self.tx() as cur:
             # UPDATE ... RETURNING is supported on SQLite >= 3.35.
@@ -479,14 +441,7 @@ class Store:
         *,
         max_failures: int,
     ) -> RequestRow:
-        """Record a failed attempt and decide the next status atomically.
-
-        While the incremented count is still below ``max_failures``, the
-        request goes back to PENDING (with ``completed_at`` cleared) so the
-        dispatcher loop will retry it on the next tick. At the cap it
-        terminates as FAILED; ``unrecoverable_items`` then drives the owning
-        item to REJECTED with the same ``last_error`` text.
-        """
+        """Requeue a failed request, or terminate it when it reaches the cap."""
         now = _utcnow()
         with self.tx() as cur:
             cur.execute(
@@ -510,9 +465,7 @@ class Store:
                 raise KeyError(f"unknown request_id {request_id!r}")
             return RequestRow.from_row(row)
 
-    # ------------------------------------------------------------------
     # Responses
-    # ------------------------------------------------------------------
 
     def insert_response(
         self,
@@ -525,11 +478,9 @@ class Store:
         cost_usd: float | None = None,
         duration_ms: int | None = None,
     ) -> None:
-        """Insert a response and atomically mark the request done.
+        """Insert a response and atomically mark its request done.
 
-        Idempotent on request_id (skipped if a response row already exists).
-        ``received_at`` is a cosmetic timestamp; the advance watermark is
-        ``responses.rowid`` (strictly monotonic), not this value.
+        Duplicate request IDs are ignored. Response rowids drive the watermark.
         """
         with self.tx() as cur:
             now = _utcnow()
@@ -573,12 +524,7 @@ class Store:
         return ResponseRow(**dict(row))
 
     def hydrate_responses(self, item_id: str, since_seq: int) -> list[sqlite3.Row]:
-        """Pull responses (rowid > since_seq) + request fields + parent in one query.
-
-        Returns rows with columns: request_id, seq (responses.rowid, the watermark),
-        role, round_n, attempt, text, parent_response_id, parent_role, parent_text.
-        Replaces the N+1 pattern of fetching each request and its parent separately.
-        """
+        """Return responses after ``since_seq`` with request and parent fields."""
         cur = self.conn.execute(
             """SELECT r.request_id            AS request_id,
                       r.rowid                  AS seq,
@@ -603,9 +549,7 @@ class Store:
         row = self.conn.execute("SELECT cost_usd_actual FROM runs WHERE run_id=?", (run_id,)).fetchone()
         return float(row[0]) if row else 0.0
 
-    # ------------------------------------------------------------------
     # Solver scores
-    # ------------------------------------------------------------------
 
     def insert_score(
         self,
@@ -662,9 +606,7 @@ class Store:
             )
         return out
 
-    # ------------------------------------------------------------------
     # Accepted dataset
-    # ------------------------------------------------------------------
 
     def insert_accepted(self, *, item_id: str, round_n: int, payload: dict) -> str:
         round_id = self.round_id(item_id, round_n)
@@ -696,19 +638,10 @@ class Store:
         for row in cur.fetchall():
             yield _loads(row["payload_blob"])
 
-    # ------------------------------------------------------------------
     # Resume normalization
-    # ------------------------------------------------------------------
 
     def normalize_for_resume(self, *, run_id: str, max_request_failures: int) -> dict[str, int]:
-        """Reconcile request states after a restart.
-
-        - in_flight w/o batch_id  → pending (local fulfill lost its work)
-        - in_flight w/ batch_id   → leave (batch poll will fetch)
-        - done w/o response row   → pending (defensive; insert_response writes both atomically)
-        - failed w/ count < cap   → pending (let it retry)
-        - failed w/ count >= cap  → leave; item goes REJECTED("unrecoverable") elsewhere
-        """
+        """Requeue interrupted local work and incomplete requests after restart."""
         counts = {"in_flight_to_pending": 0, "done_to_pending": 0, "failed_to_pending": 0}
         with self.tx() as cur:
             cur.execute(
@@ -745,15 +678,7 @@ class Store:
         run_id: str,
         max_request_failures: int,
     ) -> list[tuple[str, str | None]]:
-        """Items owning a request that has hit the failure cap.
-
-        Returns ``[(item_id, last_error), ...]``. ``last_error`` is the
-        truncated error text from the request that exceeded the cap — the
-        dispatcher folds it into the item's ``rejection_reasons`` so callers
-        can see *why* an item failed without digging into the requests table.
-        Where one item owns multiple capped requests, an arbitrary error wins;
-        that's fine since one fatal error is enough to reject the item.
-        """
+        """Return items whose requests reached the failure cap."""
         cur = self.conn.execute(
             f"""SELECT i.item_id AS item_id,
                       MAX(q.last_error) AS last_error
@@ -776,9 +701,7 @@ class Store:
         )
         return cur.fetchall()
 
-    # ------------------------------------------------------------------
     # Export
-    # ------------------------------------------------------------------
 
     def export_jsonl(self, run_id: str, out_path: Path) -> int:
         out_path.parent.mkdir(parents=True, exist_ok=True)

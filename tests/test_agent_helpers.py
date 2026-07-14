@@ -1,4 +1,4 @@
-"""Tests for the additive module-level agent helpers used by the new pipeline."""
+"""Agent request builders and response parsers."""
 
 from __future__ import annotations
 
@@ -45,9 +45,7 @@ def candidate():
     )
 
 
-# ---------------------------------------------------------------------------
 # challenger
-# ---------------------------------------------------------------------------
 
 
 def test_challenger_build_request_is_deterministic(domain, grounding):
@@ -145,7 +143,7 @@ def test_challenger_parse_response_caps_rubric_weight():
         {
             "payload": {"question": "Q?"},
             "reference_output": "ref",
-            "rubric": [{"id": "c1", "description": "x", "weight": 99}],  # > cap
+            "rubric": [{"id": "c1", "description": "x", "weight": 99}],
         }
     )
     cand = challenger.parse_response(text, source_id="s1", round_n=1, domain_name="qa", rubric_max_weight=7)
@@ -161,11 +159,11 @@ def test_challenger_parse_response_handles_garbage_rubric_weights():
         }
     )
     cand = challenger.parse_response(text, source_id="s1", round_n=1, domain_name="qa")
-    assert cand.rubric[0].weight == 1  # defaulted
+    assert cand.rubric[0].weight == 1
 
 
 def test_challenger_parse_response_tolerates_string_rubric_items():
-    # Wrong inner shape (rubric of bare strings) must coerce, not raise (C1 vector b).
+    # Bare rubric values are accepted for compatibility with loose JSON output.
     text = json.dumps(
         {"payload": {"question": "Q?"}, "reference_output": "r", "rubric": ["correctness", "clarity"]}
     )
@@ -175,7 +173,7 @@ def test_challenger_parse_response_tolerates_string_rubric_items():
 
 
 def test_extract_json_rejects_non_object():
-    # Non-object JSON breaks the dict contract callers rely on; reject it (C1 vector a).
+    # Top-level JSON must preserve the mapping contract.
     for bad in ('["correctness", "clarity"]', "42", '"accept"', "true", "null"):
         with pytest.raises(ValueError):
             extract_json(bad)
@@ -186,9 +184,7 @@ def test_extract_json_salvages_embedded_object():
     assert extract_json('Here you go: {"x": {"y": 2}}') == {"x": {"y": 2}}
 
 
-# ---------------------------------------------------------------------------
 # solver
-# ---------------------------------------------------------------------------
 
 
 def test_solver_build_request_role_validation(domain, candidate):
@@ -247,9 +243,7 @@ def test_solver_prompts_are_role_blind(domain, candidate):
     assert "strong" not in prompt_text
 
 
-# ---------------------------------------------------------------------------
 # verifier (quality + judge)
-# ---------------------------------------------------------------------------
 
 
 def test_quality_build_request_is_json_mode(domain, candidate):
@@ -324,7 +318,6 @@ def test_judge_parse_uses_weighted_average_when_total_missing(candidate):
     s = verifier.parse_judge(
         text, candidate=candidate, solver_role="strong", attempt=0, solver_response_text="x"
     )
-    # weighted: (5*1.0 + 3*0.0) / 8 = 0.625
     assert s.total == pytest.approx(0.625)
 
 
@@ -333,14 +326,12 @@ def test_judge_parse_clamps_and_drops_bad_per_criterion(candidate):
     s = verifier.parse_judge(
         text, candidate=candidate, solver_role="weak", attempt=0, solver_response_text="x"
     )
-    assert s.per_criterion["c1"] == 1.0  # clamped
-    assert "c2" not in s.per_criterion  # dropped
-    assert s.total == 0.4  # explicit total wins
+    assert s.per_criterion["c1"] == 1.0
+    assert "c2" not in s.per_criterion
+    assert s.total == 0.4
 
 
-# ---------------------------------------------------------------------------
 # reflector
-# ---------------------------------------------------------------------------
 
 
 def test_reflector_build_request_summarizes_priors(candidate):

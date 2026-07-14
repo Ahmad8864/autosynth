@@ -1,10 +1,4 @@
-"""Evaluate a HarnessSpec by running it on a slice of grounding items.
-
-``evaluate_harness`` drives an inner run via :class:`Runner` and returns the
-acceptance rate; ``aggregate_failures_from_db`` aggregates rejection reasons
-from the inner run's ``run.db`` so the mutator can address concrete failure
-modes.
-"""
+"""Evaluate a harness and summarize failures from its run database."""
 
 from __future__ import annotations
 
@@ -26,10 +20,7 @@ def evaluate_harness(
     run_id: str,
     output_dir: Path,
 ) -> tuple[float, Path]:
-    """Run with this harness on the given source items via Runner.
-
-    Returns (acceptance_rate, run_dir). acceptance_rate = accepted / N.
-    """
+    """Return the acceptance rate and run directory for the selected items."""
     cfg = run_cfg.model_copy(deep=True)
     cfg.output_dir = str(output_dir)
     cfg.run_id = run_id

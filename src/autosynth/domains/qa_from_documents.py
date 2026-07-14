@@ -1,9 +1,4 @@
-"""Generic 'QA from documents' domain.
-
-Reads .txt/.md/.json files from a directory; instructs the challenger to
-produce a question that requires reading the *specific* document (not generic
-knowledge), plus a reference answer and a rubric.
-"""
+"""Generate grounded questions from text, Markdown, and JSON documents."""
 
 from __future__ import annotations
 
@@ -35,7 +30,6 @@ class QAFromDocuments(DomainAdapter):
         self.glob = glob
         self.max_chars = max_chars
 
-    # 1. grounding ------------------------------------------------------------
     def load_grounding(self) -> Iterable[GroundingItem]:
         for path in sorted(self.source_dir.glob(self.glob)):
             if not path.is_file() or path.suffix.lower() not in {".txt", ".md", ".json"}:
@@ -47,7 +41,6 @@ class QAFromDocuments(DomainAdapter):
                 metadata={"path": str(path), "name": path.name},
             )
 
-    # 2. challenger prompt ----------------------------------------------------
     def generation_prompt(self, item, feedback, round_n, prior_payloads):
         feedback_block = bullet_list(feedback)
         prior_block = bullet_list(prior_payloads, key="question")
@@ -73,11 +66,7 @@ class QAFromDocuments(DomainAdapter):
     def payload_model(self) -> type[BaseModel] | None:
         return QAPayload
 
-    # 3. validation -----------------------------------------------------------
     def validate_candidate(self, candidate: Candidate) -> list[str]:
-        # Rubric weight bounds are already enforced by the challenger
-        # (clamped to [1, rubric_max_weight]) and the RubricCriterion schema
-        # (ge=1), so we don't re-check them here.
         errs: list[str] = []
         p = candidate.payload
         if not isinstance(p.get("question"), str) or len(p["question"].strip()) < 5:
@@ -88,7 +77,6 @@ class QAFromDocuments(DomainAdapter):
             errs.append("rubric is empty")
         return errs
 
-    # 4. solver prompt --------------------------------------------------------
     def solver_prompt(self, candidate: Candidate):
         sys = (
             "ROLE:SOLVER. Answer the question grounded in the provided context. "
@@ -101,7 +89,6 @@ class QAFromDocuments(DomainAdapter):
         )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
-    # 5. quality verifier prompt ---------------------------------------------
     def quality_prompt(self, candidate: Candidate):
         sys = (
             "ROLE:QUALITY. Audit a candidate QA datapoint. Check: (a) the question requires reading the specific source; "
@@ -120,7 +107,6 @@ class QAFromDocuments(DomainAdapter):
         )
         return [{"role": "system", "content": sys}, {"role": "user", "content": usr}]
 
-    # 6. judge prompt ---------------------------------------------------------
     def judge_prompt(self, candidate: Candidate, solver_response: str):
         sys = (
             "ROLE:JUDGE. Score the solver's response against the rubric. For each criterion, output a per_criterion "

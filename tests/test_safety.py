@@ -1,4 +1,4 @@
-"""Safety filter: the scan now covers nested payload values + the reference answer."""
+"""Safety filtering of candidate payloads and reference answers."""
 
 from __future__ import annotations
 

@@ -1,9 +1,4 @@
-"""Weak / strong solver: builds one solver attempt as an :class:`LLMRequest`.
-
-The difficulty difference between weak and strong is driven by the configured
-model + temperature, not by adversarial prompting — telling a weak model to
-"act weak" triggers gaming, per the paper.
-"""
+"""Build weak and strong solver requests."""
 
 from __future__ import annotations
 

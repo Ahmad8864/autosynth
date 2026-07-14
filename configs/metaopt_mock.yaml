@@ -1,8 +1,5 @@
-# Meta-optimization demo using the in-process MockLLMProvider.
-# Drives the full population/Boltzmann/mutate/accept loop end-to-end with
-# zero API keys. Uses the `mock/metaopt` scenario, which scripts a mutator
-# that progressively adds rules and a judge that rewards more rules in the
-# challenger system prompt — so accepted mutations actually happen.
+# Offline meta-optimization demo using the scripted `mock/metaopt` scenario.
+# It exercises mutation and acceptance without API keys.
 
 run_id: metaopt-mock-demo
 output_dir: outputs

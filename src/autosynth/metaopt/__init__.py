@@ -1,15 +1,4 @@
-"""Meta-optimization loop.
-
-Implements the paper's secondary loop: evolve the orchestrator's instruction
-set (the `HarnessSpec`) by selecting a parent via Boltzmann sampling, asking
-a mutator LLM to propose an edit informed by failure trajectories, evaluating
-the child on training items, and accepting the mutation only if the
-validation score on held-out items exceeds the parent's.
-
-Mutations operate on `HarnessSpec` (text rules + a few numeric knobs), not on
-Python source. The expressive scope for prompt edits is preserved; the safety
-profile is dramatically smaller than letting an LLM rewrite the repo.
-"""
+"""Evolutionary optimization for agent harness rules."""
 
 from __future__ import annotations
 

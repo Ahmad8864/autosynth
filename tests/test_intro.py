@@ -28,8 +28,8 @@ def test_intro_summarizes_params():
     assert "agentic synthetic data" in out
     assert "run-abc" in out
     assert "qa_from_documents" in out
-    assert "openai/gpt-4o" in out  # strong solver differs → per-role list
-    assert "mock/scripted" in out  # the other roles' default
+    assert "openai/gpt-4o" in out
+    assert "mock/scripted" in out
     assert "$5.00" in out
     assert "resuming" not in out
 
@@ -37,6 +37,6 @@ def test_intro_summarizes_params():
 def test_intro_collapses_shared_model_and_flags_resume():
     cfg = RunConfig(domain=DomainConfig(name="qa_from_documents"))
     out = _render(render_run_intro(cfg, run_id="r", run_dir=Path("outputs/r"), resume=True))
-    assert out.count("mock/scripted") == 1  # all roles share one model → single line
-    assert "unlimited" in out  # budget_usd is None
+    assert out.count("mock/scripted") == 1
+    assert "unlimited" in out
     assert "resuming" in out
