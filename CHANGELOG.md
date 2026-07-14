@@ -6,10 +6,21 @@ All notable changes to this project are documented here. The format is based on 
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.4.0] - 2026-07-14
+
+### Added
+
 - Independent final audit (`audit.enabled: true`): each round that passes acceptance takes one further LLM pass — the paper's post-loop quality verifier — re-checking leakage, source support, and rubric quality with the grounding source and scored rollouts in view. Failures feed back into the next round; `auditor:` overrides the model (defaults to judge).
 - SFT, DPO, and GRPO exports with JSONL or Hugging Face output, provenance metadata, and generated dataset cards.
 
 ### Changed
+
+- Solvers and judges no longer see whether the weak or the strong tier produced an answer, so scores can't be swayed by the label. Custom domain adapters need a small edit: `solver_prompt` and `judge_prompt` both drop their `solver_role` argument.
+- Harness rules `weak_solver_rules` and `strong_solver_rules` are now a single `solver_rules`. Rename them in any harness you pass to `metaopt.seed_harness_path` — the old names are ignored rather than rejected, so an un-renamed seed harness quietly runs with no solver rules.
 
 ### Fixed
 
@@ -89,7 +100,8 @@ Initial release.
 - LiteLLM-based real provider routing with per-role configuration.
 - CLI: `run`, `resume`, `status`, `inspect-run`, `export`, `metaopt`, `init-domain`.
 
-[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Ahmad8864/autosynth/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Ahmad8864/autosynth/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Ahmad8864/autosynth/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/Ahmad8864/autosynth/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Ahmad8864/autosynth/compare/v0.1.1...v0.2.0
