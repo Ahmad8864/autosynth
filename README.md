@@ -124,7 +124,7 @@ autosynth run         --config CONFIG.yaml [--resume RUN_ID]   # generate a data
 autosynth resume      RUN_DIR                                  # continue an interrupted run
 autosynth status      RUN_DIR                                  # one-line progress
 autosynth inspect-run RUN_DIR [--stuck]                        # detailed per-item table
-autosynth export      --run RUN_DIR --format jsonl|hf          # write accepted records
+autosynth export      --run RUN_DIR --format FORMAT                  # jsonl, hf, sft, dpo, or grpo
 autosynth metaopt     --config CONFIG.yaml                     # evolve the prompt harness
 autosynth init-domain NAME --out my_domain.py                  # scaffold a domain plugin
 ```
@@ -140,6 +140,10 @@ Each run writes to `outputs/<run_id>/`:
 - `accepted.jsonl` or `hf_export/` — created only by `autosynth export`.
 
 Inspect the schema with `sqlite3 outputs/<run_id>/run.db .schema`. The tables and accepted-record fields are described in [Architecture: Run database](docs/ARCHITECTURE.md#run-database).
+
+### Training exports
+
+`autosynth export --format sft|dpo|grpo` converts accepted records into datasets for supervised fine-tuning, preference optimization, or GRPO. Use `--to jsonl|hf` to choose the output format. Exports include provenance metadata and a dataset card by default. Schemas and selection rules are in [Architecture: Training exports](docs/ARCHITECTURE.md#training-exports).
 
 ## Safety and limitations
 

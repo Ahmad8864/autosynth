@@ -9,6 +9,14 @@ from autosynth.schemas import Candidate
 from autosynth.utils import stable_id
 
 
+def solver_messages(
+    candidate: Candidate, domain: DomainAdapter, harness: HarnessSpec | None = None
+) -> list[dict[str, str]]:
+    """Build the messages used for solver requests and training exports."""
+    h = harness or DEFAULT_HARNESS
+    return apply_harness(domain.solver_prompt(candidate), h.rules_for("solver"))
+
+
 def build_request(
     *,
     item_id: str,
@@ -25,9 +33,7 @@ def build_request(
     """Build one solver attempt's LLMRequest."""
     if role not in {"weak", "strong"}:
         raise ValueError(f"role must be 'weak' or 'strong', got {role!r}")
-    h = harness or DEFAULT_HARNESS
-    messages = domain.solver_prompt(candidate)
-    messages = apply_harness(messages, h.rules_for("solver"))
+    messages = solver_messages(candidate, domain, harness)
     return LLMRequest(
         request_id=stable_id(item_id, round_n, role, attempt),
         item_id=item_id,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
@@ -29,7 +28,7 @@ from autosynth.store.schema import (
     _utcnow,
 )
 from autosynth.store.types import RequestRow, ResponseRow
-from autosynth.utils import stable_id
+from autosynth.utils import stable_id, write_hf_dataset, write_jsonl
 
 
 class Store:
@@ -638,6 +637,21 @@ class Store:
         for row in cur.fetchall():
             yield _loads(row["payload_blob"])
 
+    def accepted_with_candidates(self, run_id: str) -> Iterator[tuple[dict, Candidate | None]]:
+        """Yield accepted payloads with their stored candidates."""
+        cur = self.conn.execute(
+            """SELECT a.payload_blob, r.candidate_blob FROM accepted a
+               JOIN rounds r ON r.round_id = a.round_id
+               JOIN items i ON i.item_id = a.item_id WHERE i.run_id=?
+               ORDER BY a.accepted_at""",
+            (run_id,),
+        )
+        for row in cur.fetchall():
+            candidate = (
+                Candidate.model_validate_json(row["candidate_blob"]) if row["candidate_blob"] else None
+            )
+            yield _loads(row["payload_blob"]), candidate
+
     # Resume normalization
 
     def normalize_for_resume(self, *, run_id: str, max_request_failures: int) -> dict[str, int]:
@@ -703,24 +717,23 @@ class Store:
 
     # Export
 
+    def truncated_attempts(self, run_id: str) -> set[tuple[str, int, str, int]]:
+        """Return solver attempts that reached their configured token limit."""
+        cur = self.conn.execute(
+            """SELECT rd.item_id, rd.round_n, s.solver, s.attempt
+               FROM solver_scores s
+               JOIN rounds rd ON rd.round_id = s.round_id
+               JOIN items i ON i.item_id = rd.item_id
+               JOIN responses r ON r.response_id = s.solver_response_id
+               JOIN requests q ON q.request_id = r.request_id
+               WHERE i.run_id = ? AND r.completion_tokens IS NOT NULL
+                 AND q.max_tokens IS NOT NULL AND r.completion_tokens >= q.max_tokens""",
+            (run_id,),
+        )
+        return {(row[0], int(row[1]), row[2], int(row[3])) for row in cur.fetchall()}
+
     def export_jsonl(self, run_id: str, out_path: Path) -> int:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        n = 0
-        with out_path.open("w", encoding="utf-8") as f:
-            for rec in self.accepted_records(run_id):
-                f.write(json.dumps(rec, default=str))
-                f.write("\n")
-                n += 1
-        return n
+        return write_jsonl(out_path, self.accepted_records(run_id))
 
     def export_hf(self, run_id: str, out_dir: Path) -> Path | None:
-        try:
-            from datasets import Dataset  # type: ignore
-        except ImportError:
-            return None
-        records = list(self.accepted_records(run_id))
-        if not records:
-            return None
-        out_dir.mkdir(parents=True, exist_ok=True)
-        Dataset.from_list(records).save_to_disk(str(out_dir))
-        return out_dir
+        return write_hf_dataset(out_dir, list(self.accepted_records(run_id)))

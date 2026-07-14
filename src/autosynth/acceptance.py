@@ -212,9 +212,14 @@ class JudgePolicy(AcceptancePolicy):
         return Decision(report=report, feedback=(suggestion,))
 
 
+def resolve_mode(cfg: RunConfig, domain: DomainAdapter) -> str:
+    """Return the configured mode, or the domain default when unset."""
+    return cfg.acceptance.mode or domain.default_acceptance_mode
+
+
 def resolve_policy(cfg: RunConfig, domain: DomainAdapter) -> AcceptancePolicy:
     """Resolve the configured mode, falling back to the domain default."""
-    mode = cfg.acceptance.mode or domain.default_acceptance_mode
+    mode = resolve_mode(cfg, domain)
     if mode == "rubric":
         return ThresholdPolicy(cfg.acceptance)
     if mode == "judge":

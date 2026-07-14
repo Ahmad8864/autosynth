@@ -108,6 +108,34 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
         f.write("\n")
 
 
+def write_jsonl(path: Path, records: Iterable[dict[str, Any]]) -> int:
+    """Write records as JSONL and return the number written."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    n = 0
+    with path.open("w", encoding="utf-8") as f:
+        for rec in records:
+            f.write(json.dumps(rec, default=str))
+            f.write("\n")
+            n += 1
+    return n
+
+
+def write_hf_dataset(out_dir: Path, records: list[dict[str, Any]]) -> Path | None:
+    """Save records as a Hugging Face dataset.
+
+    Return ``None`` when there are no records or the optional dependency is unavailable.
+    """
+    try:
+        from datasets import Dataset  # type: ignore
+    except ImportError:
+        return None
+    if not records:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    Dataset.from_list(records).save_to_disk(str(out_dir))
+    return out_dir
+
+
 def read_jsonl(path: Path) -> Iterable[dict[str, Any]]:
     """Stream records from a JSON-lines file, skipping blank/malformed lines."""
     from loguru import logger

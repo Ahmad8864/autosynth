@@ -15,6 +15,7 @@ from rich.table import Table
 from autosynth._console import STDERR_CONSOLE
 from autosynth._intro import render_run_intro
 from autosynth.config import load_config, load_snapshot
+from autosynth.export import TRAINER_FORMATS, run_export
 from autosynth.metaopt import MetaOptimizer
 from autosynth.runner import Runner
 from autosynth.store import Store
@@ -166,10 +167,19 @@ def inspect_run_cmd(
 @app.command("export")
 def export_cmd(
     run: Path = typer.Option(..., "--run", exists=True),
-    format: str = typer.Option("jsonl", "--format", "-f"),
+    format: str = typer.Option("jsonl", "--format", "-f", help="jsonl | hf | sft | dpo | grpo"),
     out: Path | None = typer.Option(None, "--out", "-o"),
+    to: str = typer.Option("jsonl", "--to", help="Trainer formats: jsonl | hf"),
+    completion: str = typer.Option("reference", "--completion", help="sft: reference | best-strong"),
+    min_score: float = typer.Option(0.75, "--min-score", help="sft best-strong floor (rubric mode)"),
+    min_chosen: float = typer.Option(0.75, "--min-chosen", help="dpo chosen floor (rubric mode)"),
+    min_margin: float = typer.Option(
+        0.30, "--min-margin", help="dpo chosen-rejected gap floor (rubric mode)"
+    ),
+    no_meta: bool = typer.Option(False, "--no-meta", help="Omit per-record provenance"),
+    no_card: bool = typer.Option(False, "--no-card", help="Skip the dataset-card README"),
 ):
-    """Export the accepted dataset from a run's run.db."""
+    """Export accepted records as raw or training datasets."""
     store, run_row = _open_run(run)
     run_id = run_row["run_id"]
     if format == "jsonl":
@@ -184,6 +194,37 @@ def export_cmd(
             console.print("[red]hf export failed (install autosynth[hf]?)[/red]")
             raise typer.Exit(1)
         console.print(f"[green]exported HF dataset to[/green] {result}")
+        return
+    if format in TRAINER_FORMATS:
+        if to not in ("jsonl", "hf"):
+            console.print(f"[red]unknown --to[/red] {to}")
+            raise typer.Exit(2)
+        if completion not in ("reference", "best-strong"):
+            console.print(f"[red]unknown --completion[/red] {completion}")
+            raise typer.Exit(2)
+        try:
+            result = run_export(
+                store,
+                run_row,
+                run,
+                format,
+                out=out,
+                to=to,
+                completion=completion,
+                min_score=min_score,
+                min_chosen=min_chosen,
+                min_margin=min_margin,
+                include_meta=not no_meta,
+                card=not no_card,
+            )
+        except (FileNotFoundError, RuntimeError) as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1) from None
+        if result.skipped:
+            console.print(
+                f"[yellow]skipped {result.skipped} record(s)[/yellow] (guards or duplicate prompts)"
+            )
+        console.print(f"[green]wrote {result.written} {format} records to[/green] {result.path}")
         return
     console.print(f"[red]unknown format[/red] {format}")
     raise typer.Exit(2)

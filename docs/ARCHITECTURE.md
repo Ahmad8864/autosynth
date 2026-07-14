@@ -101,6 +101,28 @@ weak/strong summaries, per-attempt scores, and acceptance rationale. When enable
 audit verdict is included as well. Domains can change the exported shape through
 `DomainAdapter.format_accepted()`.
 
+## Training exports
+
+`autosynth export --format sft|dpo|grpo` converts accepted records into training datasets.
+Use `--to jsonl|hf` to choose the output format. Solver prompts are rebuilt from the stored
+candidate using the configured domain and the run's stored harness. Domain code is not
+snapshotted, so changing `solver_prompt()` after a run can also change its exported prompts.
+
+- **sft** — conversational message records. The completion is `reference_output`, or the
+  highest-scoring eligible strong rollout with `--completion best-strong`.
+- **dpo** — conversational preference records with an explicit prompt. Rollouts are ranked
+  by score without regard to solver role, then the best and worst are paired. Score and
+  margin thresholds apply in rubric mode; verifiable domains pair correct and incorrect
+  attempts. Empty and truncated attempts are excluded.
+- **grpo** — prompt records with columns for reward functions. Verifiable domains include a
+  `solution`; rubric domains include `rubric` and `reference_output`. The `stats` column holds
+  the weak and strong averages, standard deviations, and gap.
+
+Every record includes `meta` provenance unless `--no-meta`. It contains model and sampling
+settings, the harness fingerprint, acceptance statistics, and the audit verdict. Exports are
+deduplicated by rendered prompt and sorted by item ID. Transforms live in
+[`export.py`](../src/autosynth/export.py).
+
 ## Meta-optimization
 
 `autosynth metaopt` evolves a `HarnessSpec`: role-specific instruction lists plus a small set

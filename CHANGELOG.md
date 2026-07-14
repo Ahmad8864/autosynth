@@ -7,6 +7,7 @@ All notable changes to this project are documented here. The format is based on 
 ### Added
 
 - Independent final audit (`audit.enabled: true`): each round that passes acceptance takes one further LLM pass — the paper's post-loop quality verifier — re-checking leakage, source support, and rubric quality with the grounding source and scored rollouts in view. Failures feed back into the next round; `auditor:` overrides the model (defaults to judge).
+- SFT, DPO, and GRPO exports with JSONL or Hugging Face output, provenance metadata, and generated dataset cards.
 
 ### Changed
 
