@@ -21,6 +21,7 @@ All notable changes to this project are documented here. The format is based on 
 
 - Solvers and judges no longer see whether the weak or the strong tier produced an answer, so scores can't be swayed by the label. Custom domain adapters need a small edit: `solver_prompt` and `judge_prompt` both drop their `solver_role` argument.
 - Harness rules `weak_solver_rules` and `strong_solver_rules` are now a single `solver_rules`. Rename them in any harness you pass to `metaopt.seed_harness_path` — the old names are ignored rather than rejected, so an un-renamed seed harness quietly runs with no solver rules.
+- Dropped Python 3.14, advertised in 0.2.1. litellm has always declared `requires-python <3.14`, and as of litellm 1.92.0 it ships a compiled extension with no 3.14 wheel, so installing there now fails outright. Supported range is 3.10–3.13; we'll put 3.14 back when litellm does.
 
 ### Fixed
 
