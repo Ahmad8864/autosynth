@@ -1,20 +1,9 @@
-"""Pure pipeline: state machine that turns responses into requests.
+"""Pure state machine that turns stored responses into new requests.
 
-``step()`` is pure: ``(state, fresh_responses) -> (new_state, new_requests,
-completed_round?, scores_to_persist?)``. No I/O, no time, no randomness.
-The dispatcher orders responses by ``request_id`` before calling ``step()``
-so concurrent fulfillment doesn't perturb state evolution.
+    PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES
+              ↘ NEED_REFLECTION ↗           → ACCEPTED | REJECTED
 
-States (6 + 2 terminal)::
-
-    PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES → [NEED_DECISION]
-              ↘ NEED_REFLECTION ↗
-              ↘ ACCEPTED | REJECTED
-
-NEED_DECISION only occurs under a judge-decided policy: once all rollouts are
-scored, a loop-judge LLM decides accept/improve (paper §3.2). Sync work
-(structural validation, safety filter, threshold/count evaluation) happens
-*inside* the response handler for the preceding async state.
+Judge-driven decisions and final audits add intermediate states when enabled.
 """
 
 from __future__ import annotations
@@ -26,6 +15,7 @@ from enum import Enum
 from typing import Any
 
 from autosynth.acceptance import AcceptancePolicy, Decision, ThresholdPolicy, weak_gate_report
+from autosynth.agents import auditor as auditor_agent
 from autosynth.agents import challenger as challenger_agent
 from autosynth.agents import loop_judge as loop_judge_agent
 from autosynth.agents import reflector as reflector_agent
@@ -36,7 +26,7 @@ from autosynth.domain import DomainAdapter, GroundingItem
 from autosynth.harness import DEFAULT_HARNESS, HarnessSpec
 from autosynth.llm import LLMRequest
 from autosynth.safety import SafetyFilter
-from autosynth.schemas import Candidate, QualityCheck, Round, SolverScore
+from autosynth.schemas import Candidate, EvalReport, QualityCheck, Round, SolverScore
 
 
 class State(str, Enum):
@@ -45,6 +35,7 @@ class State(str, Enum):
     NEED_QUALITY = "NEED_QUALITY"
     NEED_SCORES = "NEED_SCORES"
     NEED_DECISION = "NEED_DECISION"
+    NEED_AUDIT = "NEED_AUDIT"
     NEED_REFLECTION = "NEED_REFLECTION"
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
@@ -55,10 +46,7 @@ TERMINAL_STATES: frozenset[State] = frozenset({State.ACCEPTED, State.REJECTED})
 
 @dataclass(frozen=True)
 class StepResponse:
-    """A response surfaced to step(). The dispatcher hydrates these from the
-    store before each invocation. For judge responses, the dispatcher also
-    resolves and attaches ``solver_response_text`` and ``solver_role`` from
-    the parent solver request."""
+    """A stored response and any parent solver context needed by ``step``."""
 
     request_id: str
     role: str
@@ -72,7 +60,7 @@ class StepResponse:
 
 @dataclass(frozen=True)
 class ScoreRecord:
-    """A score plus the two response_ids it references; persisted to solver_scores."""
+    """A score and the response IDs it references."""
 
     score: SolverScore
     solver_response_id: str
@@ -95,6 +83,9 @@ class ItemState:
     last_feedback: tuple[str, ...] = ()
     source_metadata: dict[str, Any] = field(default_factory=dict)
     rejection_reasons: tuple[str, ...] = ()
+    # Preserved while the final audit is in flight.
+    pending_report: EvalReport | None = None
+    audit: QualityCheck | None = None
 
 
 @dataclass(frozen=True)
@@ -114,13 +105,7 @@ class ScoreIngestion:
 
 @dataclass(frozen=True)
 class StepContext:
-    """Invariant dependencies for one ``step()`` call.
-
-    Built once in :func:`step` (from the resolved harness/policy) and threaded
-    unchanged through every state handler. Holds only what stays constant across
-    a transition; the varying ``item`` (reduction state) and ``new_responses``
-    (fold input) remain explicit parameters.
-    """
+    """Dependencies shared by every handler in one ``step`` call."""
 
     cfg: RunConfig
     harness: HarnessSpec
@@ -138,11 +123,13 @@ _ROLE_TO_CFG_ATTR: dict[str, str] = {
     "weak": "weak_solver",
     "strong": "strong_solver",
     "reflector": "orchestrator",
+    "audit": "auditor",
 }
 
 
 def _model_cfg_for(cfg: RunConfig, role: str) -> ModelConfig:
-    return getattr(cfg, _ROLE_TO_CFG_ATTR[role])
+    mc = getattr(cfg, _ROLE_TO_CFG_ATTR[role])
+    return mc if mc is not None else cfg.judge
 
 
 def model_key_for(cfg: RunConfig, role: str) -> str:
@@ -171,15 +158,11 @@ def step(
     safety_filter: SafetyFilter | None = None,
     policy: AcceptancePolicy | None = None,
 ) -> StepResult:
-    """Pure state transition. See module docstring.
-
-    ``policy`` defaults to a rubric-gap :class:`ThresholdPolicy`; the dispatcher
-    passes the policy resolved from ``cfg.acceptance.mode`` + domain.
-    """
+    """Apply one state transition without performing I/O."""
     if item.state in TERMINAL_STATES:
         return StepResult(state=item)
 
-    # Ignore responses from prior rounds (artifacts of resume or out-of-order arrival).
+    # Old responses can reappear after resume.
     relevant = [r for r in new_responses if r.round_n == item.current_round]
 
     ctx = StepContext(
@@ -201,6 +184,8 @@ def step(
         return _on_scores(item, relevant, ctx)
     if item.state == State.NEED_DECISION:
         return _on_decision(item, relevant, ctx)
+    if item.state == State.NEED_AUDIT:
+        return _on_audit(item, relevant, ctx)
     if item.state == State.NEED_REFLECTION:
         return _on_reflection(item, relevant, ctx)
     raise ValueError(f"unknown state {item.state!r}")
@@ -306,8 +291,7 @@ def _on_quality(item: ItemState, relevant: list[StepResponse], ctx: StepContext)
             failure_quality=quality,
         )
 
-    # Short-circuit mode fans out only weak solvers first; strong is emitted
-    # later (in _on_scores) iff the weak gate passes.
+    # Delay strong solvers until the weak gate passes.
     roles = ("weak",) if ctx.cfg.loop.short_circuit_strong else ("weak", "strong")
     reqs = tuple(_build_solver_requests(item, ctx, roles))
     new_state = replace(
@@ -324,7 +308,7 @@ def _build_solver_requests(
     item: ItemState, ctx: StepContext, roles: tuple[str, ...] = ("weak", "strong")
 ) -> Iterator[LLMRequest]:
     candidate = item.candidate
-    assert candidate is not None  # set on entry to NEED_QUALITY, never cleared mid-round
+    assert candidate is not None
     counts = {"weak": ctx.cfg.loop.weak_samples, "strong": ctx.cfg.loop.strong_samples}
     for role in roles:
         for k in range(counts[role]):
@@ -341,16 +325,9 @@ def _build_solver_requests(
 
 
 def _on_scores(item: ItemState, relevant: list[StepResponse], ctx: StepContext) -> StepResult:
-    """Score new solver attempts; finalize once every rollout is scored.
-
-    Scoring: rubric mode (``policy.requires_judge``) emits a judge per solver
-    response; verifiable mode scores in-process via ``domain.verify()``. With
-    ``short_circuit_strong``, weak runs first and strong is emitted only if the
-    weak gate passes. Deciding: a judge-decided policy defers to a loop-judge
-    (NEED_DECISION); threshold/verifiable policies decide synchronously here.
-    """
+    """Score new attempts and finish the round when all scores arrive."""
     candidate, quality = item.candidate, item.quality
-    assert candidate is not None and quality is not None  # guaranteed in NEED_SCORES
+    assert candidate is not None and quality is not None
     if ctx.policy.requires_judge:
         new_requests, scores = _score_via_judge(item, relevant, ctx)
     else:
@@ -358,9 +335,7 @@ def _on_scores(item: ItemState, relevant: list[StepResponse], ctx: StepContext) 
 
     weak_done = len(scores.weak_scores) >= ctx.cfg.loop.weak_samples
 
-    # Conditional strong eval (opt-in): once weak is done, run strong only if the
-    # weak gate passes. Re-emit is idempotent (stable ids); strong_samples>0 avoids
-    # stranding a degenerate config here.
+    # Stable request IDs make re-emitting the delayed strong requests safe.
     if (
         ctx.cfg.loop.short_circuit_strong
         and ctx.cfg.loop.strong_samples > 0
@@ -379,7 +354,6 @@ def _on_scores(item: ItemState, relevant: list[StepResponse], ctx: StepContext) 
                 new_requests=tuple(new_requests) + strong_reqs,
                 scores_to_persist=scores.records,
             )
-        # Weak gate failed (too easy): skip strong, finalize the round now.
         return _finalize_decision(
             item,
             ctx,
@@ -402,8 +376,6 @@ def _on_scores(item: ItemState, relevant: list[StepResponse], ctx: StepContext) 
             scores_to_persist=scores.records,
         )
 
-    # All rollouts scored. A judge-decided policy runs the loop-judge (async, via
-    # NEED_DECISION); threshold/verifiable policies decide synchronously here.
     if ctx.policy.decides_async:
         req = loop_judge_agent.build_request(
             item_id=item.item_id,
@@ -450,12 +422,7 @@ def _score_via_judge(
 def _score_via_verify(
     item: ItemState, relevant: list[StepResponse], ctx: StepContext
 ) -> tuple[list[LLMRequest], ScoreIngestion]:
-    """Verifiable mode: score each new solver response via ``domain.verify()``.
-
-    No judge is dispatched; the SolverScore is binary and the ScoreRecord
-    self-references the solver response (there is no judge row). Re-delivered
-    attempts are deduped by (solver, attempt) so resume can't double-count.
-    """
+    """Score solver responses directly with the domain verifier."""
     new_weak = list(item.weak_scores)
     new_strong = list(item.strong_scores)
     seen = {(s.solver, s.attempt) for s in (*new_weak, *new_strong)}
@@ -480,9 +447,7 @@ def _score_via_verify(
 
 
 def _verify_score(domain, candidate, resp) -> SolverScore:
-    """Binary SolverScore from a domain verdict. ``total`` is 1.0/0.0; ``correct``
-    is the verdict (None when unverifiable). Exceptions are swallowed here — never
-    raised into the dispatcher — so a faulty verify() can't livelock an item."""
+    """Convert a domain verdict to a binary score, failing closed on errors."""
     common = dict(solver=resp.role, attempt=resp.attempt, raw_response=resp.text)
     try:
         correct = domain.verify(candidate, resp.text)
@@ -502,7 +467,7 @@ def _emit_judges_for_new_solvers(
     item: ItemState, relevant: list[StepResponse], ctx: StepContext
 ) -> list[LLMRequest]:
     candidate = item.candidate
-    assert candidate is not None  # NEED_SCORES guarantees a candidate
+    assert candidate is not None
     out: list[LLMRequest] = []
     for r in relevant:
         if r.role not in ("weak", "strong"):
@@ -534,7 +499,7 @@ def _ingest_judge_responses(item, relevant):
         if r.role != "judge" or item.candidate is None or r.solver_role is None:
             continue
         if (r.solver_role, r.attempt) in seen:
-            continue  # re-delivered on resume; store already deduped, don't double-count in memory
+            continue  # Re-delivered after resume.
         seen.add((r.solver_role, r.attempt))
         score = verifier_agent.parse_judge(
             r.text,
@@ -560,21 +525,58 @@ def _ingest_judge_responses(item, relevant):
 
 
 def _on_decision(item: ItemState, relevant: list[StepResponse], ctx: StepContext) -> StepResult:
-    """A judge-decided policy: turn the loop-judge response into accept/improve."""
+    """Apply a loop-judge decision."""
     resp = _find_role(relevant, "loop_judge")
     if resp is None:
         return StepResult(state=item)
     verdict = loop_judge_agent.parse_verdict(resp.text)
     quality = item.quality
-    assert quality is not None  # NEED_DECISION guarantees quality
+    assert quality is not None
     decision = ctx.policy.decide(verdict, item.weak_scores, item.strong_scores, quality)
     return _finalize_decision(
         item,
         ctx,
         decision=decision,
-        scores_to_persist=(),  # scores were persisted at the NEED_SCORES→NEED_DECISION transition
+        scores_to_persist=(),
         extra_requests=(),
         use_reflector=False,
+    )
+
+
+def _on_audit(item: ItemState, relevant: list[StepResponse], ctx: StepContext) -> StepResult:
+    """Accept a passing audit or feed failures into the next round."""
+    resp = _find_role(relevant, "audit")
+    if resp is None:
+        return StepResult(state=item)
+    check = auditor_agent.parse_audit(resp.text)
+    report = item.pending_report
+    assert report is not None
+    audited = replace(item, audit=check, pending_report=None)
+
+    if check.passed:
+        return _finalize_decision(
+            audited,
+            ctx,
+            decision=Decision(report=report),
+            use_reflector=False,
+            audited=True,
+        )
+
+    failures = check.failures or ["unspecified"]
+    failed = report.model_copy(
+        update={
+            "accepted": False,
+            "acceptance_rationale": None,
+            "rejection_reasons": [f"audit:{f}" for f in failures],
+        }
+    )
+    feedback = tuple(f"final audit failed: {f}" for f in failures)
+    return _finalize_decision(
+        audited,
+        ctx,
+        decision=Decision(report=failed, feedback=feedback),
+        use_reflector=False,
+        audited=True,
     )
 
 
@@ -586,16 +588,33 @@ def _finalize_decision(
     scores_to_persist: tuple[ScoreRecord, ...] = (),
     extra_requests: tuple[LLMRequest, ...] = (),
     use_reflector: bool,
+    audited: bool = False,
 ) -> StepResult:
-    """Turn a Decision into the next state: accept, reflect/improve, or reject.
-
-    ``use_reflector`` selects the improve path: sync policies run the reflector
-    (NEED_REFLECTION); the judge policy supplies ``decision.feedback`` and goes
-    straight to the next challenger round.
-    """
+    """Accept, improve, audit, or reject the completed round."""
     candidate, quality = item.candidate, item.quality
-    assert candidate is not None and quality is not None  # set since NEED_SCORES
+    assert candidate is not None and quality is not None
     report = decision.report
+
+    if report.accepted and ctx.cfg.audit.enabled and not audited:
+        areq = auditor_agent.build_request(
+            item_id=item.item_id,
+            round_n=item.current_round,
+            **_dispatch_kwargs(ctx.cfg, "audit"),
+            candidate=candidate,
+            grounding=ctx.grounding,
+            weak_scores=item.weak_scores,
+            strong_scores=item.strong_scores,
+            domain=ctx.domain,
+            audit_cfg=ctx.cfg.audit,
+            harness=ctx.harness,
+        )
+        new_state = replace(item, state=State.NEED_AUDIT, pending_report=report)
+        return StepResult(
+            state=new_state,
+            new_requests=extra_requests + (areq,),
+            scores_to_persist=scores_to_persist,
+        )
+
     round_obj = Round(
         refinement_round=item.current_round,
         candidate=candidate,
@@ -630,10 +649,7 @@ def _finalize_decision(
                 completed_round=round_obj,
                 scores_to_persist=scores_to_persist,
             )
-        # Judge-improve: the loop-judge already gave the suggestion; bump the round
-        # with it as feedback (skip the reflector) and emit the next challenger.
-        # Scores were persisted at NEED_DECISION entry; insert_score files under the
-        # (now-bumped) current_round, so none may ride along here.
+        # Scores must stay filed under the round that produced them.
         assert not scores_to_persist, (
             "judge-improve must not carry scores (they misfile under the bumped round)"
         )
@@ -646,6 +662,7 @@ def _finalize_decision(
             strong_scores=(),
             last_feedback=decision.feedback,
             rounds_history=rounds_history,
+            audit=None,
         )
         result = _emit_challenger(bumped, ctx)
         return replace(result, new_requests=result.new_requests + extra_requests, completed_round=round_obj)
@@ -694,12 +711,7 @@ def _find_role(responses: list[StepResponse], role: str) -> StepResponse | None:
 def _build_reflector_request(
     item: ItemState, ctx: StepContext, rounds_history: tuple[Round, ...]
 ) -> LLMRequest:
-    """Reflector request for the item entering its next round.
-
-    Both improve paths emit this: a scored reject (``_finalize_decision``) and an
-    early structural/quality/safety reject (``_go_to_reflection_or_reject``). Keep
-    it in one place so the policy/domain wiring can't drift between them.
-    """
+    """Build feedback for the next round."""
     return reflector_agent.build_request(
         item_id=item.item_id,
         round_n=item.current_round,
@@ -758,8 +770,7 @@ def _go_to_reflection_or_reject(
 
 
 def _safety_text(candidate: Candidate) -> str:
-    """Text scanned by the safety filter: every nested string/number value in the
-    payload plus the reference answer (where a leaked PII value most often lands)."""
+    """Flatten candidate values for the safety filter."""
     parts: list[str] = []
     _collect_text(candidate.payload, parts)
     if candidate.reference_output:
@@ -770,7 +781,7 @@ def _safety_text(candidate: Candidate) -> str:
 def _collect_text(value: Any, out: list[str]) -> None:
     if isinstance(value, str):
         out.append(value)
-    elif isinstance(value, (int, float)):  # bool is an int subclass; harmless
+    elif isinstance(value, (int, float)):
         out.append(str(value))
     elif isinstance(value, dict):
         for v in value.values():

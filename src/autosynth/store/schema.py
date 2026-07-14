@@ -1,10 +1,4 @@
-"""SQLite schema, status/state constants, and JSON serialization helpers.
-
-The DAO in :mod:`autosynth.store.dao` is the only consumer. These live in their
-own module so the schema can be read top-to-bottom without scrolling past
-~600 lines of methods, and so other subpackages that only need the constants
-(``REQ_PENDING``, ``ITEM_ACCEPTED``, etc.) don't have to import the DAO class.
-"""
+"""SQLite schema, migrations, state constants, and JSON helpers."""
 
 from __future__ import annotations
 
@@ -131,7 +125,7 @@ CREATE TABLE accepted (
 """
 
 
-# (target_version, ddl) applied in order to upgrade old dbs; fresh dbs get _SCHEMA_SQL.
+# Applied in order; new databases use _SCHEMA_SQL directly.
 _MIGRATIONS: tuple[tuple[int, tuple[str, ...]], ...] = (
     (2, ("ALTER TABLE solver_scores ADD COLUMN correct INTEGER",)),
     (3, ("ALTER TABLE items ADD COLUMN consumed_seq INTEGER NOT NULL DEFAULT 0",)),
@@ -147,14 +141,13 @@ REQ_IN_FLIGHT = "in_flight"
 REQ_DONE = "done"
 REQ_FAILED = "failed"
 
-# Item states. Defined here (not imported from pipeline.State) so the store
-# can stay free of pipeline dependencies and so raw SQL strings reference a
-# single source of truth. pipeline.State mirrors these values.
+# Kept independent from pipeline.State so the store has no pipeline dependency.
 ITEM_PENDING = "PENDING"
 ITEM_NEED_CANDIDATE = "NEED_CANDIDATE"
 ITEM_NEED_QUALITY = "NEED_QUALITY"
 ITEM_NEED_SCORES = "NEED_SCORES"
 ITEM_NEED_DECISION = "NEED_DECISION"
+ITEM_NEED_AUDIT = "NEED_AUDIT"
 ITEM_NEED_REFLECTION = "NEED_REFLECTION"
 ITEM_ACCEPTED = "ACCEPTED"
 ITEM_REJECTED = "REJECTED"

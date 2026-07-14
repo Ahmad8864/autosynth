@@ -1,8 +1,4 @@
-"""DTO mapping between the store (sqlite rows) and the pipeline (frozen dataclasses).
-
-Pure functions. No I/O beyond store reads. Keeping these out of the
-:class:`Dispatcher` class so the run loop stays focused on orchestration.
-"""
+"""Map SQLite rows to and from immutable pipeline state."""
 
 from __future__ import annotations
 
@@ -45,11 +41,14 @@ def load_item_state(store: Store, item_row: sqlite3.Row) -> ItemState:
 
     candidate = None
     quality = None
+    pending_report = None
     if current_round_blob is not None:
         if current_round_blob["candidate_blob"]:
             candidate = Candidate.model_validate_json(current_round_blob["candidate_blob"])
         if current_round_blob["quality_blob"]:
             quality = QualityCheck.model_validate_json(current_round_blob["quality_blob"])
+        if item_row["state"] == State.NEED_AUDIT.value and current_round_blob["eval_blob"]:
+            pending_report = EvalReport.model_validate_json(current_round_blob["eval_blob"])
 
     scores = store.scores_for_round(item_id, current_round)
     weak_scores = tuple(s for s in scores if s.solver == "weak")
@@ -85,17 +84,12 @@ def load_item_state(store: Store, item_row: sqlite3.Row) -> ItemState:
         last_feedback=last_feedback,
         source_metadata=source_metadata,
         rejection_reasons=rejection_reasons,
+        pending_report=pending_report,
     )
 
 
 def hydrate_responses(store: Store, item_id: str, since_seq: int) -> tuple[list[StepResponse], int | None]:
-    """Pull responses (rowid > since_seq) + matching request/parent fields in one query.
-
-    Returns ``(responses, max_seq)``. The dispatcher writes ``max_seq`` to the
-    item's ``consumed_seq`` watermark — a strictly-monotonic integer that bounds
-    the just-consumed responses without masking worker rows that committed
-    concurrently. ``None`` when no rows matched.
-    """
+    """Return new responses and the highest consumed rowid."""
     out: list[StepResponse] = []
     max_seq: int | None = None
     for row in store.hydrate_responses(item_id, since_seq):
@@ -122,9 +116,7 @@ def row_to_round(row) -> Round:
     candidate = Candidate.model_validate_json(row["candidate_blob"]) if row["candidate_blob"] else None
     quality = QualityCheck.model_validate_json(row["quality_blob"]) if row["quality_blob"] else None
     evaluation = EvalReport.model_validate_json(row["eval_blob"]) if row["eval_blob"] else None
-    # A historical round (round_n < current_round) always has a persisted
-    # candidate; the placeholders here only matter for partially-written rows
-    # observed mid-write during resume.
+    # Placeholders cover partially written historical rows during resume.
     return Round(
         refinement_round=int(row["round_n"]),
         candidate=candidate or _PLACEHOLDER_CANDIDATE,
@@ -152,14 +144,7 @@ def request_to_row(r: LLMRequest) -> dict:
 
 
 def row_to_llm_request(r: RequestRow, domain: DomainAdapter | None = None) -> LLMRequest:
-    """Hydrate a stored RequestRow back into an LLMRequest for fulfillment.
-
-    The strict challenger `response_schema` is intentionally not persisted (a raw
-    Pydantic class in SQLite would be a serialization hazard); it's rebuilt here
-    from ``role`` + ``domain.payload_model()`` so resumed/re-claimed challenger
-    requests enforce the same shape as fresh ones. ``domain=None`` (e.g. the
-    batch path, which sends plain JSON mode) yields a schema-less request.
-    """
+    """Rebuild an LLM request, including its in-memory response schema."""
     response_schema = None
     if domain is not None and r.role == "challenger":
         response_schema = challenger_schema_for(domain.payload_model())
@@ -193,4 +178,5 @@ def accepted_extras(item: ItemState, round_obj: Round) -> dict:
         "weak_scores": [s.model_dump() for s in (ev.weak_scores if ev else [])],
         "strong_scores": [s.model_dump() for s in (ev.strong_scores if ev else [])],
         "acceptance_rationale": ev.acceptance_rationale if ev else None,
+        "audit": item.audit.model_dump() if item.audit else None,
     }

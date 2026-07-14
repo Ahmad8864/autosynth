@@ -28,7 +28,7 @@ polled.
 ## Item state machine
 
 ```
-PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES → ACCEPTED
+PENDING → NEED_CANDIDATE → NEED_QUALITY → NEED_SCORES → [NEED_AUDIT] → ACCEPTED
                                               │
                                               └─ NEED_REFLECTION → (next round) ─┐
                                                                                  │
@@ -67,6 +67,13 @@ enough), skipping strong + judge calls on the easy majority at the cost of seria
 round. Off by default; leave it off under `judge` mode, where it only adds serialization
 without skipping anything.
 
+**Independent final audit.** `audit.enabled: true` routes a round that passes acceptance (any
+mode) through `NEED_AUDIT` before `ACCEPTED`: one further LLM call — the paper's post-loop
+quality verifier — re-checks the candidate with what the pre-solve quality stage never sees,
+the grounding source and the scored rollouts. On fail, the audit failures become next-round
+challenger feedback, subject to `loop.max_rounds`. The `auditor` model defaults to `judge`;
+the prompt and harness rules are overridable (`DomainAdapter.audit_prompt`, `audit_rules`).
+
 ## Run database
 
 Everything for a run lives under `outputs/<run_id>/`:
@@ -79,8 +86,9 @@ The authoritative schema is the database itself — `sqlite3 outputs/<run_id>/ru
 generated from `src/autosynth/store/schema.py`. At time of writing the tables are `runs`,
 `items`, `rounds`, `requests`, `responses`, `solver_scores`, and `accepted`. Each accepted
 record carries `input`, `reference_output`, `rubric`, `domain`, `source_id`, `metadata`, the
-weak/strong/gap scores, per-attempt solver scores, and the acceptance rationale; the exact
-serialization is `DomainAdapter.format_accepted` (`src/autosynth/domain.py`).
+weak/strong/gap scores, per-attempt solver scores, the acceptance rationale, and the final-audit
+verdict when the audit is enabled; the exact serialization is `DomainAdapter.format_accepted`
+(`src/autosynth/domain.py`).
 
 `test_store.py` covers `claim_pending` atomicity under threads and resume normalization;
 `test_dispatcher.py` covers end-to-end accept, concurrent fulfill, budget abort, and

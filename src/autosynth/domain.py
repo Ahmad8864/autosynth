@@ -1,25 +1,4 @@
-"""Domain plugin interface and registry.
-
-A domain plugin defines *only* the parts of the pipeline that depend on the
-target task. Everything else (the loop, acceptance criteria, writers, agents)
-is provided by the framework.
-
-There are two ways to register a domain:
-
-1. In-process decorator (for domains shipped with this package or with the
-   user's own code that is already imported):
-
-       @register_domain("my_qa")
-       class MyQA(DomainAdapter): ...
-
-2. By path, referenced in YAML config:
-
-       domain:
-         path: /abs/path/to/my_domain.py:MyDomain
-         params: {seeds_path: ./seeds.jsonl}
-
-   The framework dynamically imports the file and instantiates the class.
-"""
+"""Domain plugin interface, registry, and loader."""
 
 from __future__ import annotations
 
@@ -40,11 +19,7 @@ from autosynth.schemas import Candidate, RubricCriterion
 
 @dataclass
 class GroundingItem:
-    """Source material for one trajectory.
-
-    `body` is whatever raw content the challenger should read (text, JSON,
-    serialized table). `metadata` propagates into the trajectory.
-    """
+    """Source material and metadata for one trajectory."""
 
     source_id: str
     body: str
@@ -52,10 +27,7 @@ class GroundingItem:
 
 
 class DomainAdapter(ABC):
-    """Subclass this to add a new domain. Six methods, all required.
-
-    See `autosynth/domains/qa_from_documents.py` for a worked example.
-    """
+    """Base class for task-specific prompts, validation, and output formatting."""
 
     name: str = "unnamed"
     description: str = ""
@@ -64,12 +36,10 @@ class DomainAdapter(ABC):
     def __init__(self, **params: Any):
         self.params = params
 
-    # ---- 1. grounding source ------------------------------------------------
     @abstractmethod
     def load_grounding(self) -> Iterable[GroundingItem]:
         """Yield source items. May be a generator; framework iterates once."""
 
-    # ---- 2. challenger prompt ----------------------------------------------
     @abstractmethod
     def generation_prompt(
         self,
@@ -84,22 +54,18 @@ class DomainAdapter(ABC):
           {"payload": {...}, "reference_output": "...", "rubric": [...]}
         """
 
-    # ---- 3. candidate validation -------------------------------------------
     @abstractmethod
     def validate_candidate(self, candidate: Candidate) -> list[str]:
         """Return a list of failure reasons; empty list means valid."""
 
-    # ---- 4. solver prompt --------------------------------------------------
     @abstractmethod
     def solver_prompt(self, candidate: Candidate) -> list[dict[str, str]]:
         """Build the prompt that asks a solver to attempt the task."""
 
-    # ---- 5. verifier (quality) prompt --------------------------------------
     @abstractmethod
     def quality_prompt(self, candidate: Candidate) -> list[dict[str, str]]:
         """Prompt for the quality verifier (leakage, coverage, formatting...)."""
 
-    # ---- 6. judge prompt ---------------------------------------------------
     @abstractmethod
     def judge_prompt(
         self,
@@ -108,7 +74,7 @@ class DomainAdapter(ABC):
     ) -> list[dict[str, str]]:
         """Prompt the judge to score solver_response against the rubric."""
 
-    # ---- optional hooks -----------------------------------------------------
+    # Optional hooks
 
     def format_accepted(self, candidate: Candidate, extra: dict[str, Any]) -> dict[str, Any]:
         """Final shape written to the dataset. Override to customize."""
@@ -127,25 +93,24 @@ class DomainAdapter(ABC):
         return []
 
     def payload_model(self) -> type[BaseModel] | None:
-        """Optional Pydantic model tightening the challenger `payload` to a strict
-        schema. `validate_candidate()` still runs afterward; return ``None`` for a
-        free-form ``payload`` dict.
-        """
+        """Return a strict payload model, or ``None`` for a free-form mapping."""
         return None
 
     def verify(self, candidate: Candidate, solver_response: str) -> bool | None:
-        """Programmatic correctness check for verifiable acceptance (mode="verifiable").
+        """Return a deterministic correctness verdict, or ``None`` if unverifiable."""
+        return None
 
-        Return True/False, or None when the response can't be verified (counted
-        as incorrect). MUST be pure and deterministic — no network, subprocess,
-        clock, or randomness; it runs inside the pure pipeline ``step()``.
-        """
+    def audit_prompt(
+        self,
+        candidate: Candidate,
+        grounding: GroundingItem | None,
+        evidence: dict[str, Any] | None,
+    ) -> list[dict[str, str]] | None:
+        """Return a custom audit prompt, or ``None`` to use the default."""
         return None
 
 
-# ---------------------------------------------------------------------------
 # Registry + loader
-# ---------------------------------------------------------------------------
 
 _REGISTRY: dict[str, type[DomainAdapter]] = {}
 
@@ -203,7 +168,6 @@ def build_domain(name: str | None, path: str | None, params: dict[str, Any]) -> 
     return cls(**(params or {}))
 
 
-# Convenience for rubric construction in domain plugins
 def rubric(*items: tuple[str, str, int]) -> list[RubricCriterion]:
     return [RubricCriterion(id=i, description=d, weight=w) for i, d, w in items]
 
@@ -215,13 +179,7 @@ def bullet_list(
     limit: int = 0,
     empty: str = "(none)",
 ) -> str:
-    """Render a bulleted list for inclusion in a prompt.
-
-    - Pass a list of strings to bullet them directly.
-    - Pass a list of dicts plus ``key`` to extract that field from each dict.
-    - ``limit > 0`` truncates each rendered item to that many characters.
-    - Returns ``empty`` when the input is empty (default ``"(none)"``).
-    """
+    """Render strings or a selected mapping field as a bulleted list."""
     if not items:
         return empty
     if key is None:

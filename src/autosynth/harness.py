@@ -1,15 +1,4 @@
-"""HarnessSpec — the unit of evolution in the meta-optimization loop.
-
-A `HarnessSpec` holds the *editable* parts of the orchestrator's instructions:
-rule strings that get injected into each agent's system prompt, plus a few
-structural knobs (rubric cap, self-test requirement). Mutations operate on
-this object, not on Python source — same expressive scope for prompt edits,
-far safer than letting an LLM write code into the repo.
-
-The Orchestrator and agents accept an optional `HarnessSpec`; when omitted
-they fall back to `DEFAULT_HARNESS`, so behavior is unchanged for callers
-that don't care about meta-optimization.
-"""
+"""Editable agent rules used by the meta-optimization loop."""
 
 from __future__ import annotations
 
@@ -23,16 +12,7 @@ def _id(*parts) -> str:
 
 
 class HarnessSpec(BaseModel):
-    """One candidate set of orchestrator instructions.
-
-    Mutable fields:
-      - {role}_rules: ordered list of rule strings appended to that role's
-        system prompt under an "ADDITIONAL RULES" block.
-      - rubric_max_weight: cap propagated to the challenger's rubric parser.
-        Paper's meta-opt converged to 7.
-      - require_self_test: when True, challenger is asked to include a
-        `self_test` field and quality is asked to verify it.
-    """
+    """One candidate set of role-specific instructions."""
 
     harness_id: str
     parent_id: str | None = None
@@ -44,11 +24,11 @@ class HarnessSpec(BaseModel):
     judge_rules: list[str] = Field(default_factory=list)
     solver_rules: list[str] = Field(default_factory=list)
     reflector_rules: list[str] = Field(default_factory=list)
+    audit_rules: list[str] = Field(default_factory=list)
 
     rubric_max_weight: int = 7
     require_self_test: bool = False
 
-    # Filled in by the meta-optimizer after evaluation.
     train_score: float | None = None
     val_score: float | None = None
 
@@ -114,16 +94,11 @@ DEFAULT_HARNESS: HarnessSpec = make_harness(
 )
 
 
-# ---------------------------------------------------------------------------
-# Prompt injection helper used by every agent.
-# ---------------------------------------------------------------------------
+# Prompt injection
 
 
 def apply_harness(messages: list[dict[str, str]], rules: list[str]) -> list[dict[str, str]]:
-    """Append an 'ADDITIONAL RULES' block to the system message.
-
-    If there's no system message, a new one is prepended.
-    """
+    """Add rules to the system message, creating one when needed."""
     if not rules:
         return messages
     block = "\n\nADDITIONAL RULES (from harness):\n" + "\n".join(f"- {r}" for r in rules)

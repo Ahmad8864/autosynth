@@ -1,10 +1,4 @@
-"""Mutation operator: LLM proposes a diff to a HarnessSpec.
-
-Mutations are structured edits to rule lists and a few numeric knobs —
-the mutator never emits Python source. Out-of-range indices, wrong types,
-and unknown keys are silently dropped so a malformed mutator response can
-never crash the loop.
-"""
+"""Apply LLM-proposed edits to a harness specification."""
 
 from __future__ import annotations
 
@@ -17,7 +11,7 @@ from autosynth.harness import HarnessSpec, make_harness
 from autosynth.llm import LLMClient, LLMRequest
 from autosynth.utils import stable_id
 
-_RULE_ROLES = ("challenger", "quality", "judge", "solver", "reflector")
+_RULE_ROLES = ("challenger", "quality", "judge", "solver", "reflector", "audit")
 
 
 class Mutator:
@@ -39,6 +33,8 @@ class Mutator:
         '  "solver_rules_remove_indices": [ints],\n'
         '  "reflector_rules_add": [strings],\n'
         '  "reflector_rules_remove_indices": [ints],\n'
+        '  "audit_rules_add": [strings],\n'
+        '  "audit_rules_remove_indices": [ints],\n'
         '  "rubric_max_weight": int 1..10,\n'
         '  "require_self_test": bool\n'
         "}\n"
@@ -127,7 +123,6 @@ def apply_mutation(parent: HarnessSpec, mutation: dict[str, Any], *, iteration: 
 
     rationale = str(mutation.get("rationale") or "").strip()
 
-    # Strip non-mutable / inherited fields before re-constructing.
     for k in ("harness_id", "parent_id", "iteration", "rationale", "train_score", "val_score"):
         fields.pop(k, None)
 

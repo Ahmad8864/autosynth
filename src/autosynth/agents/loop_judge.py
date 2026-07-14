@@ -1,9 +1,4 @@
-"""Loop-judge: decides accept/improve for a scored round (paper §3.2).
-
-Unlike the fixed-threshold policies, the loop-judge reads the per-rollout
-weak/strong patterns and decides whether the round is good GRPO training data,
-emitting a concrete suggestion for the next challenger round when it isn't.
-"""
+"""Use scored attempts to accept a round or suggest an improvement."""
 
 from __future__ import annotations
 
@@ -23,12 +18,13 @@ from autosynth.utils import extract_json, stable_id
 @dataclass(frozen=True)
 class LoopJudgeVerdict:
     accept: bool
-    grpo_suitability: str  # "high" | "medium" | "low"
+    grpo_suitability: str
     reason: str
     suggestion: str
 
 
-def _scores_summary(weak: Sequence[SolverScore], strong: Sequence[SolverScore]) -> dict[str, object]:
+def scores_summary(weak: Sequence[SolverScore], strong: Sequence[SolverScore]) -> dict[str, object]:
+    """Per-rollout / avg / std / gap block, shared with the final auditor's prompt."""
     weak_vals = [s.total for s in weak] or [0.0]
     strong_vals = [s.total for s in strong] or [0.0]
     weak_avg, strong_avg = mean(weak_vals), mean(strong_vals)
@@ -75,7 +71,7 @@ def build_request(
         {
             "payload": candidate.payload,
             "reference_output": candidate.reference_output,
-            "scores": _scores_summary(weak_scores, strong_scores),
+            "scores": scores_summary(weak_scores, strong_scores),
             "quality_notes": quality.notes if quality else None,
         },
         default=str,

@@ -1,9 +1,4 @@
-"""Boxed run summary printed once at the top of ``autosynth run``, before the
-dispatcher's live progress bar takes over.
-
-Laid out top-to-bottom rather than in columns: columns crop long model strings
-at real terminal widths.
-"""
+"""Run summary shown before the live progress bar."""
 
 from __future__ import annotations
 
@@ -19,11 +14,10 @@ from rich.text import Text
 
 from autosynth.config import RunConfig
 
-# Fixed rather than terminal-relative: reads as a card, and stays wide enough
-# that typical run ids, paths, and models fold instead of cropping.
+# Keep long paths and model names wrapping inside a consistent card width.
 _WIDTH = 64
 
-_ACCENT = "#7fbf7f"  # soft green, matches the autosynth mark
+_ACCENT = "#7fbf7f"
 
 _ROLES = (
     ("orchestrator", "orchestrator"),
@@ -33,8 +27,7 @@ _ROLES = (
     ("judge", "judge"),
 )
 
-# Tint each model by its provider so a mixed setup groups visually. Keys match
-# the token before the first "/" in a LiteLLM model string.
+# Keys are LiteLLM provider prefixes.
 _PROVIDER_STYLES = {
     "openai": "green",
     "azure": "bright_cyan",
@@ -64,8 +57,8 @@ def _section(title: str, grid: Table) -> Group:
 
 def _kv_grid() -> Table:
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(style="grey62", justify="left", no_wrap=True)  # labels: short, known
-    grid.add_column(overflow="fold")  # values: wrap rather than crop an over-long path/model
+    grid.add_column(style="grey62", justify="left", no_wrap=True)
+    grid.add_column(overflow="fold")
     return grid
 
 
@@ -94,6 +87,8 @@ def _loop_section(cfg: RunConfig) -> Group:
         "rounds",
         f"{cfg.loop.max_rounds} · weak×{cfg.loop.weak_samples} strong×{cfg.loop.strong_samples}",
     )
+    if cfg.audit.enabled:
+        grid.add_row("audit", _model_text((cfg.auditor or cfg.judge).provider_model))
     grid.add_row("dispatch", _dispatch(cfg))
     grid.add_row(
         "budget",
@@ -147,5 +142,5 @@ def render_run_intro(cfg: RunConfig, *, run_id: str, run_dir: Path, resume: bool
         subtitle=Text("run", style="grey42"),
         subtitle_align="right",
         padding=(1, 2),
-        width=_WIDTH + 6,  # content width + 2*padding + 2 borders
+        width=_WIDTH + 6,
     )

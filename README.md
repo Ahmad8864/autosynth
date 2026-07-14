@@ -5,14 +5,14 @@
 [![Python](https://img.shields.io/pypi/pyversions/autosynth.svg)](https://pypi.org/project/autosynth/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Generate synthetic datasets with an LLM loop that proposes, audits, solves, and judges its own work. Inspired by Meta FAIR's [Autodata / Agentic Self-Instruct][paper] paper ([blog post][blog]), but rewritten to be domain-agnostic: every domain-specific piece lives in a small Python plugin, and the runtime is the same regardless of whether you're generating math word problems, support-ticket triage data, or QA pairs from your own docs.
+autosynth builds synthetic datasets with an LLM loop that proposes, checks, solves, and scores its own examples. It is inspired by Meta FAIR's [Autodata / Agentic Self-Instruct][paper] paper and accompanying [blog post][blog].
 
-For each candidate datapoint, autosynth runs a *weak* solver and a *strong* solver, scores both against an LLM-generated rubric, and keeps the example only if the strong solver clearly beats the weak one on a quality-passing example. Failed rounds are reflected on and fed back into the next attempt.
+Task-specific behavior lives in a small Python plugin. The same runtime can generate math problems, support-ticket data, document-grounded QA, or other structured examples. It keeps candidates that pass quality checks and show a useful gap between a weak and a strong solver; failed attempts become feedback for the next round.
 
 [paper]: https://doi.org/10.48550/arXiv.2606.25996
 [blog]: https://facebookresearch.github.io/RAM/blogs/autodata/
 
-> **Status:** alpha. The API is still moving — pin a commit if you're depending on it.
+> **Status:** alpha. APIs may change; pin a version or commit for production use.
 
 ## Install
 
@@ -31,7 +31,7 @@ uv run autosynth status outputs/mock-demo
 uv run autosynth export --run outputs/mock-demo --format jsonl
 ```
 
-The mock demo uses an in-process scripted "provider" and finishes in about a second. It writes `outputs/mock-demo/run.db` plus a frozen config snapshot. The `export` step is opt-in — the SQLite database is the source of truth.
+The mock demo uses a local scripted provider and normally finishes in about a second. It writes `outputs/mock-demo/run.db` and a config snapshot. Export is optional; SQLite remains the source of truth.
 
 ## Real providers
 
@@ -49,9 +49,9 @@ strong_solver: { provider_model: openai/gpt-4o }
 judge:         { provider_model: anthropic/claude-haiku-4-5, temperature: 0.0 }
 ```
 
-You can mix providers across roles. The cheaper-vs-frontier split between the two solvers is the whole point — that's what produces the weak/strong gap that drives acceptance.
+Roles can use different providers. Choose the solver models and temperatures so the strong solver has a meaningful advantage over the weak one.
 
-`${VAR}` and `${VAR:default}` substitution works in any string field, so `api_base: ${OLLAMA_HOST:http://localhost:11434}` does what you'd expect.
+String fields support `${VAR}` and `${VAR:default}` interpolation. For example, `api_base: ${OLLAMA_HOST:http://localhost:11434}` uses `OLLAMA_HOST` when set.
 
 See `configs/example_qa.yaml` and `configs/example_math.yaml` for full real-provider configs.
 
@@ -59,7 +59,7 @@ See `configs/example_qa.yaml` and `configs/example_math.yaml` for full real-prov
 
 ## How it works
 
-For each source item, autosynth runs the same five-step loop until the candidate is accepted or `loop.max_rounds` is exhausted:
+For each source item, autosynth repeats this loop until a candidate is accepted or `loop.max_rounds` is reached:
 
 1. **Challenger** proposes a candidate `(input, reference_output, rubric)`.
 2. **Quality** audits the candidate for obvious problems.
@@ -69,18 +69,24 @@ For each source item, autosynth runs the same five-step loop until the candidate
 
 ### Acceptance modes
 
-Three regimes decide whether a candidate is kept; pick per task with `acceptance.mode` (or omit it to use the domain's default):
+Set `acceptance.mode` per task, or omit it to use the domain default:
 
-- **rubric** (default) — the judge scores each rollout against the rubric; acceptance is a threshold-and-gap test. Best when quality is a matter of degree.
-- **verifiable** — the domain checks answers programmatically (`verify()`), the judge is skipped, and acceptance is a count gate: *weak must fail, strong must succeed.* Use for checkable answers (math, code, exact extraction). The bundled `math_word_problems` domain ships this way.
-- **judge** — a loop-judge LLM reads the per-rollout weak/strong patterns and decides accept/improve each round. Use for open-ended tasks where no fixed threshold fits.
+- **rubric** (default) — the judge scores each attempt against the rubric, then fixed thresholds check the weak score, strong score, and gap.
+- **verifiable** — the domain checks answers with `verify()`. This skips the judge and accepts by correct-answer counts. It suits math, code, exact extraction, and other checkable tasks.
+- **judge** — after rubric scoring, another LLM reads the weak/strong results and decides whether to accept or improve the round.
 
 ```yaml
 acceptance:
   mode: verifiable     # or: rubric | judge
 ```
 
-The exact default thresholds live in `AcceptanceConfig` (`src/autosynth/config.py`); the mechanism, plus the `loop.short_circuit_strong` cost-saver, is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#acceptance).
+Default thresholds live in [`AcceptanceConfig`](src/autosynth/config.py). See [Architecture: Acceptance](docs/ARCHITECTURE.md#acceptance) for the decision flow and `loop.short_circuit_strong`.
+
+### Final audit
+
+Set `audit.enabled: true` to run one more check before acceptance. The auditor sees the source and scored attempts, and checks leakage, source support, and rubric quality. Failures become feedback for the next round.
+
+The audit uses the judge model unless `auditor` is configured separately. See [Architecture: Acceptance](docs/ARCHITECTURE.md#acceptance) for details.
 
 ## Writing a domain
 
@@ -99,11 +105,11 @@ domain:
     source_csv: ./tickets.csv
 ```
 
-The two bundled domains (`src/autosynth/domains/qa_from_documents.py`, `math_word_problems.py`) are short and worth reading before you write your own.
+The bundled [`qa_from_documents`](src/autosynth/domains/qa_from_documents.py) and [`math_word_problems`](src/autosynth/domains/math_word_problems.py) domains provide small working examples.
 
 ## Meta-optimization
 
-`autosynth metaopt --config CONFIG.yaml` runs the paper's secondary loop: evolve the orchestrator's *prompts* over generations, keeping a mutation only when it beats its parent on validation. Try it without keys:
+`autosynth metaopt --config CONFIG.yaml` evolves the agent instructions, keeping a mutation only when it outperforms its parent on validation. The mock configuration runs without API keys:
 
 ```bash
 uv run autosynth metaopt --config configs/metaopt_mock.yaml
@@ -123,31 +129,37 @@ autosynth metaopt     --config CONFIG.yaml                     # evolve the prom
 autosynth init-domain NAME --out my_domain.py                  # scaffold a domain plugin
 ```
 
-Run `autosynth <command> --help` for the full flag set. `--stuck` filters to items that haven't reached a terminal state — what you want when something looks wrong.
+Run `autosynth <command> --help` for all options. `--stuck` shows only non-terminal items.
 
 ## Run outputs
 
-Everything for a run lives under `outputs/<run_id>/`: the `run.db` SQLite database (the source of truth, safe to share), a `config.snapshot.yaml` that resume reads back, and — only after `autosynth export` — `accepted.jsonl` / `hf_export/`. Inspect the database directly with `sqlite3 outputs/<run_id>/run.db .schema`; the table layout and accepted-record fields are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#run-database).
+Each run writes to `outputs/<run_id>/`:
+
+- `run.db` — the SQLite source of truth.
+- `config.snapshot.yaml` — the configuration used for the run and its default resume configuration.
+- `accepted.jsonl` or `hf_export/` — created only by `autosynth export`.
+
+Inspect the schema with `sqlite3 outputs/<run_id>/run.db .schema`. The tables and accepted-record fields are described in [Architecture: Run database](docs/ARCHITECTURE.md#run-database).
 
 ## Safety and limitations
 
 - Every accepted datapoint carries an `acceptance_rationale` and a serialized `EvalReport`. There is no silent acceptance path.
-- The built-in PII filter (`safety.enabled: true`) is a conservative heuristic, not a real DLP. For anything regulated, plug your own module in via `safety.filter`.
-- Solvers are never *told* they're the weak or strong solver — the differential comes from the model/temperature choice. The paper flags adversarial prompting here as a gaming vector, so don't.
-- There is no diversity / near-duplicate check on accepted examples yet. If you need that, extend `store.insert_accepted` with MinHash or embedding-based dedupe.
-- LLM-as-judge bias is what it is. The rubric weight cap and the positive-only rule from the paper help, but don't pretend they eliminate it.
+- The built-in PII filter (`safety.enabled: true`) is a conservative heuristic, not a DLP system. Regulated workloads should provide a filter through `safety.filter`.
+- Weak and strong solvers differ by model and sampling settings, not by instructions to behave weakly or strongly.
+- Accepted examples are not checked for diversity or near-duplicates. Add a deduplication step if your dataset requires one.
+- LLM judges remain biased and fallible. Rubric constraints reduce some failure modes but do not remove the need for evaluation.
 
 ## Architecture
 
-The runtime is an event-sourced pipeline over SQLite: a pure `step()` state machine, a dispatcher that fulfills LLM requests, and a durable store. Because `step()` is pure, you can kill a run at any point and `autosynth resume` picks up exactly where it left off. The full design — runtime, item state machine, and batch mode — is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The runtime is an event-sourced pipeline over SQLite: a pure `step()` state machine, a request dispatcher, and a durable store. Persisted requests, responses, and deterministic IDs let interrupted runs resume without starting over. See [Architecture & internals](docs/ARCHITECTURE.md) for the full design.
 
 ## Develop
 
 ```bash
-uv run pytest          # runs offline against the in-process mock — no keys, no network
+uv run pytest
 ```
 
-Setup, linting, commit conventions, and how to add a domain are in [CONTRIBUTING.md](CONTRIBUTING.md).
+The test suite runs offline against in-process providers. Setup, linting, commit conventions, and domain development are covered in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

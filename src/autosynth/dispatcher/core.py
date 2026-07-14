@@ -1,18 +1,4 @@
-"""Dispatcher: the only thing that touches the network.
-
-The run loop, in pseudocode::
-
-    while not stop:
-        advance items with unconsumed responses (calls pure step())
-        claim and fulfill pending requests
-        poll outstanding batches (no-op for local)
-        check budget; honor signals
-
-``fulfill`` is a strategy callable — :func:`fulfill_local` (thread-pool) is
-the default; the batch-API variant lives in :mod:`autosynth.dispatcher.batch`.
-DTO mapping (store rows ↔ frozen pipeline state) lives in
-:mod:`autosynth.dispatcher.hydration` so the run loop stays focused on flow.
-"""
+"""Drive pipeline transitions and fulfill their pending requests."""
 
 from __future__ import annotations
 
@@ -93,8 +79,7 @@ class Dispatcher:
             load_filter(cfg.safety.filter) if cfg.safety.enabled else None
         )
         self._stop = threading.Event()
-        # Workers set this after posting a response so the main loop can
-        # wake immediately instead of waiting out the poll interval.
+        # Workers use this to interrupt the main loop's idle wait.
         self._work_ready = threading.Event()
         self._installed_handlers: list = []
         self._pool: ThreadPoolExecutor | None = None
@@ -102,7 +87,7 @@ class Dispatcher:
         self._progress: DispatcherProgress | None = None
 
     def _executor(self) -> ThreadPoolExecutor:
-        """Lazy persistent thread pool for fulfill_local — created once per run."""
+        """Create the local worker pool on first use."""
         if self._pool is None:
             workers = max(1, self.cfg.dispatcher.concurrency)
             self._pool = ThreadPoolExecutor(
@@ -140,26 +125,19 @@ class Dispatcher:
             self._refresh_progress(in_flight=in_flight)
             if not advanced and not dispatched and not polled:
                 if in_flight == 0:
-                    # A worker may have committed a response between our
-                    # ``items_ready_to_advance`` query above and now. Since
-                    # ``in_flight_count == 0`` proves no workers are still
-                    # running, any such write is now visible — re-check
-                    # before deciding to break.
+                    # A worker may have committed after the readiness query.
                     if self.store.items_ready_to_advance(self.run_id, limit=1):
                         continue
                     if not self.store.has_non_terminal_items(self.run_id):
                         break
                     if self.store.pending_count(self.run_id) == 0:
-                        # Non-terminal items remain but nothing is queued or in
-                        # flight — break out instead of spinning on stuck state.
+                        # Stop instead of spinning on an item with no work queued.
                         logger.warning(
                             "dispatcher idle but non-terminal items remain; states={}",
                             self.store.items_terminal_counts(self.run_id),
                         )
                         break
-                # Idle this tick: block until a worker posts a response or
-                # the poll interval elapses. Workers set _work_ready in
-                # ``notify``; the signal handler sets it on stop too.
+                # Wait for a worker, signal, or the next batch poll.
                 self._work_ready.wait(self.cfg.dispatcher.poll_interval_s)
                 self._work_ready.clear()
             if self._budget_exceeded():
@@ -205,7 +183,7 @@ class Dispatcher:
                 policy=self.policy,
             )
         except Exception as e:
-            # step() is pure, so a crash recurs every tick — retrying livelocks; dead-letter.
+            # A deterministic step failure would otherwise livelock the item.
             logger.exception("pipeline step crashed for item {}; rejecting", item_state.item_id)
             self.store.update_item(
                 item_state.item_id,
@@ -224,8 +202,7 @@ class Dispatcher:
         new_state = result.state
         completed = result.completed_round
 
-        # Persist the current round's candidate + quality; if the same round
-        # also completed (eval available), merge into one upsert below.
+        # Keep an accepted report durable while its audit is pending.
         if new_state.candidate is not None and (
             completed is None or completed.refinement_round != new_state.current_round
         ):
@@ -234,6 +211,7 @@ class Dispatcher:
                 round_n=new_state.current_round,
                 candidate=new_state.candidate,
                 quality=new_state.quality,
+                evaluation=new_state.pending_report,
             )
 
         if completed is not None:
@@ -270,8 +248,7 @@ class Dispatcher:
                 judge_response_id=sr.judge_response_id,
             )
 
-        # Stash last_feedback into the previous round's reflection column so
-        # a resume can rehydrate it for the new challenger.
+        # Persist feedback with the previous round for resume.
         if (
             new_state.state == State.NEED_CANDIDATE
             and new_state.current_round > 1
@@ -295,19 +272,12 @@ class Dispatcher:
             rejection_reasons=(
                 list(new_state.rejection_reasons) or None if new_state.state == State.REJECTED else None
             ),
-            # Advance the watermark to the max rowid of consumed responses so
-            # worker rows committed concurrently with this step (invisible to our
-            # hydrate snapshot, but with strictly higher rowids) aren't masked.
-            # ``None`` for transitions that consumed no responses (e.g. the
-            # PENDING-first-step path) — consumed_seq stays put, which is correct
-            # there since it's already 0 and the challenger response has rowid ≥ 1.
+            # A rowid watermark cannot hide responses committed after this snapshot.
             consumed_seq=consumed_watermark,
         )
 
     def _dispatch_pending(self) -> int:
-        # Cap claims by available headroom so the worker pool's queue can't
-        # grow unbounded under async fulfillment. ``concurrency`` doubles as
-        # the pool's max_workers, so this bounds true parallelism honestly.
+        # Do not let the worker queue grow beyond configured concurrency.
         headroom = self.cfg.dispatcher.concurrency - self.store.in_flight_count(self.run_id)
         if headroom <= 0:
             return 0
